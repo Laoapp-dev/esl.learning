@@ -24,7 +24,6 @@ import { useCallback, useState } from 'react';
 import {
   collection, query, where, orderBy, getDocs, Timestamp,
 } from 'firebase/firestore';
-import { db } from '@/lib/firebase';
 import type { VocabularyWord } from '@/types/vocabulary';
 
 const COLLECTION = 'vocabulary';
@@ -51,6 +50,9 @@ export function useFirestoreVocabulary() {
     setSyncing(true);
     setError(null);
     try {
+      // Lazy-import so this page never pays the Firebase bundle cost (and
+      // can't affect page load) unless an admin actually triggers a sync.
+      const { db } = await import('@/lib/firebase');
       const last = opts?.forceFull ? null : getLastSync();
       const col = collection(db, COLLECTION);
       const q = last
