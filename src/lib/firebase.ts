@@ -23,7 +23,12 @@ const firebaseConfig = {
 };
 
 export function firebaseConfigured(): boolean {
-  return Boolean(firebaseConfig.apiKey && firebaseConfig.projectId);
+  const key = (firebaseConfig.apiKey || '').trim();
+  const project = (firebaseConfig.projectId || '').trim();
+  // Real Firebase web API keys always start with "AIza". Catches the common
+  // misconfiguration case of a secret that's set but empty, or accidentally
+  // pasted with quotes/placeholder text still in it.
+  return key.startsWith('AIza') && project.length > 0;
 }
 
 export const firebaseApp = getApps().length ? getApp() : initializeApp(firebaseConfig);

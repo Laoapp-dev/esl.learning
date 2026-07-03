@@ -269,6 +269,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     } catch (e) {
       const err = e as { code?: string; message?: string };
       if (err.code === 'auth/popup-closed-by-user') return { success: false, error: 'Sign-in cancelled' };
+      if (err.code === 'auth/invalid-api-key' || err.code === 'auth/api-key-not-valid') {
+        return { success: false, error: 'Google sign-in is misconfigured: the Firebase API key baked into this build is missing or invalid. An admin needs to check the VITE_FIREBASE_* secrets and redeploy.' };
+      }
+      if (err.code === 'auth/unauthorized-domain') {
+        return { success: false, error: `This site's domain isn't authorized for Google sign-in yet. An admin needs to add it under Firebase console → Authentication → Settings → Authorized domains.` };
+      }
+      if (err.code === 'auth/configuration-not-found') {
+        return { success: false, error: 'Google sign-in is not enabled for this Firebase project yet. An admin needs to enable it under Authentication → Sign-in method → Google.' };
+      }
       return { success: false, error: err.message || 'Google sign-in failed' };
     }
   }, []);
