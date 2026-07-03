@@ -23,12 +23,44 @@ const firebaseConfig = {
 };
 
 export function firebaseConfigured(): boolean {
+  return firebaseConfigDiagnostics().length === 0;
+}
+
+/**
+ * Returns a list of human-readable problems with the baked-in Firebase
+ * config, or an empty array if everything looks valid. Never includes the
+ * actual key value (only whether it's present / well-formed) so it's safe
+ * to log or show in the UI.
+ *
+ * Open your browser DevTools console on the live site — this runs on load
+ * (see the warning below) so you can see exactly what the DEPLOYED build
+ * actually received from your GitHub Actions secrets, without needing
+ * repo/server access to check.
+ */
+export function firebaseConfigDiagnostics(): string[] {
+  const problems: string[] = [];
   const key = (firebaseConfig.apiKey || '').trim();
   const project = (firebaseConfig.projectId || '').trim();
-  // Real Firebase web API keys always start with "AIza". Catches the common
-  // misconfiguration case of a secret that's set but empty, or accidentally
-  // pasted with quotes/placeholder text still in it.
-  return key.startsWith('AIza') && project.length > 0;
+  const authDomain = (firebaseConfig.authDomain || '').trim();
+
+  if (!key) problems.push('VITE_FIREBASE_API_KEY is empty/missing in this build');
+  else if (!key.startsWith('AIza')) problems.push(`VITE_FIREBASE_API_KEY doesn't look like a real Firebase key (should start with "AIza", got "${key.slice(0, 6)}…")`);
+
+  if (!project) problems.push('VITE_FIREBASE_PROJECT_ID is empty/missing in this build');
+  if (!authDomain) problems.push('VITE_FIREBASE_AUTH_DOMAIN is empty/missing in this build');
+
+  return problems;
+}
+
+if (typeof window !== 'undefined') {
+  const problems = firebaseConfigDiagnostics();
+  if (problems.length > 0) {
+    // eslint-disable-next-line no-console
+    console.warn('[ESL Learning] Firebase is not fully configured in this build:\n' + problems.map(p => ' - ' + p).join('\n') +
+      '\nIf you just added/fixed GitHub Actions secrets, remember: secrets are only baked in at BUILD time. ' +
+      'You must trigger a new deploy (push a commit, or Actions tab → Run workflow) — merely saving the secret does nothing to an already-deployed build. ' +
+      'Also try an Incognito window or unregister the service worker (Application tab) — this app caches aggressively for offline use, so an old build can keep being served after a successful redeploy.');
+  }
 }
 
 export const firebaseApp = getApps().length ? getApp() : initializeApp(firebaseConfig);

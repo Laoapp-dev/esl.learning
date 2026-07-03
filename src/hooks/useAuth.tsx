@@ -224,9 +224,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     success: boolean; error?: string; needsProfile?: boolean; draft?: GoogleProfileDraft;
   }> => {
     try {
-      const { auth, googleProvider, firebaseConfigured } = await import('@/lib/firebase');
+      const { auth, googleProvider, firebaseConfigured, firebaseConfigDiagnostics } = await import('@/lib/firebase');
       if (!firebaseConfigured()) {
-        return { success: false, error: 'Google sign-in is not configured for this app yet. Ask the admin to set up Firebase Authentication.' };
+        const reasons = firebaseConfigDiagnostics();
+        return {
+          success: false,
+          error: `Google sign-in isn't configured correctly for this build: ${reasons.join('; ')}. This usually means the GitHub Actions secrets weren't picked up by the last deploy — check spelling of the secret names and trigger a fresh deploy.`,
+        };
       }
       const { signInWithPopup } = await import('firebase/auth');
       const result = await signInWithPopup(auth, googleProvider);
