@@ -271,25 +271,18 @@ function loadFromStorage<T>(key: string, fallback: T): T {
 }
 
 /**
- * Defensive sanitizer for any array of "word-like" objects coming from
- * localStorage, Firestore, Google Sheets, GitHub, or CSV import.
- *
- * ROOT CAUSE OF THE "Cannot read properties of null (reading 'word')" CRASH:
- * every one of those sources can — through an old app version, a corrupted
- * localStorage write, a half-finished sync, or a malformed CSV row — end up
- * with a `null`/`undefined` element sitting in an otherwise valid array.
- * Every place in the app that later does `words.map(w => w.word)` (Quiz,
- * Flashcards, Matching, Dashboard, WordList, …) then throws the instant it
- * hits that hole, which crashes the whole render tree and trips the
- * ErrorBoundary. Filtering the array once, right where it enters app state,
- * makes every downstream `.word` access safe without having to defensively
- * guard dozens of call sites individually.
+ * Defensively strips any null/undefined/malformed entries out of a word
+ * array. Corrupted data can end up in localStorage (or in a shared sync
+ * payload) from an old app version, a bad CSV row, or a partial write — and
+ * without this guard, a single null entry crashes the entire app on load
+ * (upsertWords/indexByKey reads `.word` on every entry). This makes the app
+ * self-heal from any bad data it encounters instead of hard-crashing.
  */
 function sanitizeWords(arr: unknown): VocabularyWord[] {
   if (!Array.isArray(arr)) return [];
   return arr.filter(
     (w): w is VocabularyWord =>
-      !!w && typeof w === 'object' && typeof (w as any).word === 'string' && (w as any).word.trim() !== ''
+      !!w && typeof w === 'object' && typeof (w as VocabularyWord).word === 'string' && (w as VocabularyWord).word.trim().length > 0
   );
 }
 
@@ -315,21 +308,15 @@ const GS_WORDS_KEY = 'moe_gsheet_words';
 function upsertWords(base: VocabularyWord[], incoming: Partial<VocabularyWord>[]): {
   result: VocabularyWord[]; added: number; updated: number;
 } {
-  // Defensive: strip any null/undefined/word-less entries before we touch
-  // them. This is what prevents "Cannot read properties of null (reading
-  // 'word')" — see sanitizeWords() above for the full explanation.
-  const safeBase = sanitizeWords(base);
-  const safeIncoming = Array.isArray(incoming)
-    ? incoming.filter((w): w is Partial<VocabularyWord> => !!w && typeof w === 'object' && !!(w as any).word && String((w as any).word).trim() !== '')
-    : [];
-
+  const cleanBase = sanitizeWords(base);
+  const cleanIncoming = Array.isArray(incoming) ? incoming.filter((w): w is Partial<VocabularyWord> => !!w && typeof w === 'object') : [];
   const keyOf = (w: string) => w.toLowerCase().trim();
-  const indexByKey = new Map(safeBase.map((w, i) => [keyOf(w.word), i]));
-  const next = [...safeBase];
+  const indexByKey = new Map(cleanBase.map((w, i) => [keyOf(w.word), i]));
+  const next = [...cleanBase];
   const toAppend: VocabularyWord[] = [];
   let added = 0, updated = 0;
 
-  for (const raw of safeIncoming) {
+  for (const raw of cleanIncoming) {
     const w = raw as VocabularyWord;
     if (!w.word || !w.word.trim()) continue;
     const key = keyOf(w.word);
@@ -375,7 +362,7 @@ function upsertWords(base: VocabularyWord[], incoming: Partial<VocabularyWord>[]
     }
   }
 
-  return { result: added + updated > 0 ? [...next, ...toAppend] : safeBase, added, updated };
+  return { result: added + updated > 0 ? [...next, ...toAppend] : base, added, updated };
 }
 
 export function useVocabulary(dataKeyPrefix?: string) {
@@ -473,15 +460,17 @@ export function useVocabulary(dataKeyPrefix?: string) {
   }, []);
 
   const importWords = useCallback((newWords: Omit<VocabularyWord, 'id' | 'dateAdded' | 'studyCount' | 'correctCount' | 'isLearned' | 'difficulty'>[]) => {
-    const imported = newWords.map(w => ({
-      ...w,
-      id: uuidv4(),
-      dateAdded: new Date().toISOString(),
-      studyCount: 0,
-      correctCount: 0,
-      isLearned: false,
-      difficulty: 'medium' as const,
-    }));
+    const imported = (Array.isArray(newWords) ? newWords : [])
+      .filter((w): w is typeof w => !!w && typeof w === 'object' && typeof w.word === 'string' && w.word.trim().length > 0)
+      .map(w => ({
+        ...w,
+        id: uuidv4(),
+        dateAdded: new Date().toISOString(),
+        studyCount: 0,
+        correctCount: 0,
+        isLearned: false,
+        difficulty: 'medium' as const,
+      }));
     setWords(prev => [...imported, ...prev]);
     return imported.length;
   }, []);
