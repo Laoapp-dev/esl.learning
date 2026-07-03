@@ -13,13 +13,24 @@ import { initializeApp, getApps, getApp } from 'firebase/app';
 import { getFirestore } from 'firebase/firestore';
 import { getAuth, GoogleAuthProvider } from 'firebase/auth';
 
+// Some people copy their Firebase key including the surrounding quote marks
+// (e.g. from a JSON snippet or an old .env file: "AIzaSy...") and paste that
+// whole string — quotes and all — into the GitHub Actions secret value.
+// Vite just substitutes the literal secret string, so the quotes become part
+// of the actual key at runtime, and every request fails. This strips any
+// wrapping " or ' (and stray whitespace) so a mis-pasted secret still works.
+function clean(v: string | undefined): string {
+  if (!v) return '';
+  return v.trim().replace(/^['"]+|['"]+$/g, '').trim();
+}
+
 const firebaseConfig = {
-  apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
-  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
-  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
-  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
-  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
-  appId: import.meta.env.VITE_FIREBASE_APP_ID,
+  apiKey: clean(import.meta.env.VITE_FIREBASE_API_KEY),
+  authDomain: clean(import.meta.env.VITE_FIREBASE_AUTH_DOMAIN),
+  projectId: clean(import.meta.env.VITE_FIREBASE_PROJECT_ID),
+  storageBucket: clean(import.meta.env.VITE_FIREBASE_STORAGE_BUCKET),
+  messagingSenderId: clean(import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID),
+  appId: clean(import.meta.env.VITE_FIREBASE_APP_ID),
 };
 
 export function firebaseConfigured(): boolean {

@@ -26,6 +26,20 @@ if ('serviceWorker' in navigator) {
     refreshing = true;
     window.location.reload();
   });
+
+  // Mobile browsers (iOS Safari in particular) are inconsistent about
+  // spontaneously checking for a new service worker version, especially for
+  // a PWA reopened from the home screen rather than freshly navigated to.
+  // Without this, a phone that first loaded a broken build can stay stuck
+  // on it indefinitely even after the site is fixed and redeployed — reload
+  // just re-serves the same stale precached shell. Force an explicit check:
+  // once now, and again whenever the app is brought to the foreground.
+  navigator.serviceWorker.ready.then(reg => {
+    reg.update().catch(() => {});
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') reg.update().catch(() => {});
+    });
+  }).catch(() => {});
 }
 
 createRoot(document.getElementById('root')!).render(

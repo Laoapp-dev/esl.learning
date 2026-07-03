@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Eye, EyeOff, Mail, Lock, User, Sparkles, BookMarked, Zap, Star, Globe2,
@@ -61,7 +61,7 @@ function Mascot() {
 }
 
 export function AuthPage() {
-  const { login, register, loginWithGoogle, completeGoogleProfile } = useAuth();
+  const { login, register, loginWithGoogle, completeGoogleProfile, pendingGoogleDraft } = useAuth();
   const [mode, setMode]         = useState<'login' | 'register'>('login');
   const [email, setEmail]       = useState('');
   const [password, setPassword] = useState('');
@@ -98,11 +98,27 @@ export function AuthPage() {
     }
   };
 
+  // Picks up a Google sign-in that completed via full-page redirect (mobile
+  // fallback for when a popup can't be used — see useAuth.tsx) rather than
+  // popup. That flow finishes after this page reloads, so the result arrives
+  // through context instead of the loginWithGoogle() return value.
+  useEffect(() => {
+    if (pendingGoogleDraft && !googleDraft) {
+      setGoogleDraft(pendingGoogleDraft);
+      setGFullName(pendingGoogleDraft.suggestedName);
+    }
+  }, [pendingGoogleDraft]); // eslint-disable-line
+
   const handleGoogleClick = async () => {
     setError('');
     setGoogleLoading(true);
     try {
       const res = await loginWithGoogle();
+      if (res.redirecting) {
+        // Page is about to navigate to Google — leave the loading state on
+        // rather than flashing an error; the tab is leaving anyway.
+        return;
+      }
       if (!res.success) {
         setError(res.error || 'Google sign-in failed');
       } else if (res.needsProfile && res.draft) {
