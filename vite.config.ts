@@ -18,6 +18,14 @@ const base = './'
 
 export default defineConfig({
   base,
+  // Baked-in build timestamp, shown small on the login screen (AuthPage) and
+  // logged to the console on boot. Lets anyone confirm — just by looking at
+  // the live site, no repo access needed — whether a given deploy actually
+  // took effect, instead of guessing whether "still broken" means the fix
+  // didn't work or the browser is just still serving an old cached build.
+  define: {
+    __BUILD_TIME__: JSON.stringify(new Date().toISOString()),
+  },
   plugins: [
     react(),
     VitePWA({

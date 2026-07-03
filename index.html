@@ -33,6 +33,73 @@
   </head>
   <body>
     <div id="root"></div>
+
+    <!--
+      Root-cause-agnostic blank-screen safety net.
+      This runs as plain inline JS, completely independent of the React
+      bundle — so it still works even if the main script 404s, throws during
+      module evaluation, or never finishes loading for any reason. Without
+      this, ANY such failure is silent and indistinguishable from the page
+      just being slow: no error, no visible sign anything is wrong, just
+      white forever. This gives the person a visible, actionable way out
+      instead of a dead end, no matter what actually broke.
+    -->
+    <script>
+      (function () {
+        var SHOW_AFTER_MS = 6000;
+        var timer = setTimeout(function () {
+          var root = document.getElementById('root');
+          // If React ever mounted anything, #root has children — don't show.
+          if (root && root.children.length > 0) return;
+          var overlay = document.createElement('div');
+          overlay.setAttribute('id', 'esl-boot-fallback');
+          overlay.style.cssText = 'position:fixed;inset:0;background:#1A1A2E;color:#fff;' +
+            'display:flex;flex-direction:column;align-items:center;justify-content:center;' +
+            'padding:24px;text-align:center;font-family:system-ui,-apple-system,sans-serif;z-index:99999;';
+          overlay.innerHTML =
+            '<div style="font-size:40px;margin-bottom:12px;">⏳</div>' +
+            '<h1 style="font-size:20px;font-weight:800;margin-bottom:8px;">Still loading…</h1>' +
+            '<p style="opacity:.75;margin-bottom:20px;max-width:420px;">' +
+            'This is taking longer than expected. This usually means an old cached ' +
+            'version got stuck. Tap below to clear it and reload — your saved words ' +
+            'and login are not affected, they live in this browser separately.</p>' +
+            '<button id="esl-boot-fix-btn" style="background:#00B4D8;color:#fff;font-weight:700;' +
+            'border:none;border-radius:12px;padding:12px 24px;cursor:pointer;font-size:14px;">' +
+            'Clear cache &amp; reload</button>' +
+            '<p style="opacity:.5;font-size:12px;margin-top:14px;max-width:380px;">' +
+            'Still stuck after this? Open your browser\'s site settings and clear data for ' +
+            'this site manually, then visit the link again.</p>';
+          document.body.appendChild(overlay);
+
+          document.getElementById('esl-boot-fix-btn').addEventListener('click', function () {
+            var done = function () { window.location.reload(); };
+            try {
+              if ('serviceWorker' in navigator) {
+                navigator.serviceWorker.getRegistrations()
+                  .then(function (regs) { return Promise.all(regs.map(function (r) { return r.unregister(); })); })
+                  .then(function () { return caches && caches.keys ? caches.keys() : []; })
+                  .then(function (keys) { return Promise.all(keys.map(function (k) { return caches.delete(k); })); })
+                  .then(done).catch(done);
+              } else {
+                done();
+              }
+            } catch (e) { done(); }
+          });
+        }, SHOW_AFTER_MS);
+
+        // If the app does mount, cancel the timer so the overlay never
+        // flashes on a normal, just-slightly-slow load.
+        var observer = new MutationObserver(function () {
+          var root = document.getElementById('root');
+          if (root && root.children.length > 0) {
+            clearTimeout(timer);
+            observer.disconnect();
+          }
+        });
+        observer.observe(document.getElementById('root'), { childList: true });
+      })();
+    </script>
+
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
