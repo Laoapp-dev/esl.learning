@@ -19,11 +19,27 @@ import { ErrorBoundary } from './components/ErrorBoundary.tsx'
 //
 // Fix: force a one-time full reload the moment a new service worker takes
 // control, so the running app always matches the active service worker.
+// eslint-disable-next-line no-console
+console.log('[ESL Learning] build:', typeof __BUILD_TIME__ !== 'undefined' ? __BUILD_TIME__ : 'dev');
+
 if ('serviceWorker' in navigator) {
-  let refreshing = false;
+  // IMPORTANT: an in-memory flag (`let refreshing = false`) does NOT protect
+  // against a reload loop, because it resets to false on every single reload
+  // — the exact thing we're trying to guard against. If the controller keeps
+  // changing across repeated reloads (which can genuinely happen), that bug
+  // produces an infinite reload loop: the page never finishes loading long
+  // enough to render anything, which looks exactly like "blank white screen,
+  // nothing happens." Using sessionStorage instead means the guard survives
+  // the reload, so we hard-cap this to ONE automatic reload per tab session.
+  const RELOAD_GUARD_KEY = 'esl_sw_reloaded_this_session';
   navigator.serviceWorker.addEventListener('controllerchange', () => {
-    if (refreshing) return;
-    refreshing = true;
+    if (sessionStorage.getItem(RELOAD_GUARD_KEY) === '1') {
+      // Already auto-reloaded once this session — don't loop. Whatever is
+      // on screen now is what the user gets; a manual reload always still
+      // works normally.
+      return;
+    }
+    sessionStorage.setItem(RELOAD_GUARD_KEY, '1');
     window.location.reload();
   });
 

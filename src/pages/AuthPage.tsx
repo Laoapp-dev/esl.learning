@@ -417,6 +417,12 @@ export function AuthPage() {
         className="text-center text-xs text-muted-foreground mt-4 font-medium">
         Register on any device · sign in anywhere with the same email
       </motion.p>
+      {/* Build stamp — lets you confirm which deploy is actually live without
+          repo access. If this doesn't change after a deploy, the browser is
+          serving a cached build, not the new one (see MIGRATION_GUIDE.md). */}
+      <p className="text-center text-[10px] text-muted-foreground/50 mt-2">
+        build {typeof __BUILD_TIME__ !== 'undefined' ? __BUILD_TIME__.replace('T', ' ').slice(0, 16) + ' UTC' : 'dev'}
+      </p>
     </div>
   );
 }
