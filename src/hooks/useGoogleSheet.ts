@@ -1,5 +1,5 @@
 /**
- * useGoogleSheet — Google Sheets / Apps Script sync for LexoMaster
+ * useGoogleSheet — Google Sheets / Apps Script sync for ESL Learning
  *
  * Supports TWO modes:
  *  1. Published-CSV  : public read-only URL (File → Publish to web → CSV)

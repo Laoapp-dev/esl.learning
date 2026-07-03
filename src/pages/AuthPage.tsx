@@ -37,7 +37,7 @@ function Mascot() {
       {/* Owl-style mascot using emoji + glow ring */}
       <div className="relative">
         <div className="w-20 h-20 rounded-[28px] overflow-hidden shadow-xl ring-2 ring-white/30">
-          <img src="./icons/icon-512.png" alt="LexoMaster owl" className="w-full h-full object-cover" />
+          <img src="./icons/icon-512.png" alt="ESL Learning owl" className="w-full h-full object-cover" />
         </div>
         {/* XP glow ring */}
         <div className="absolute -inset-1 rounded-[32px] border-2 border-white/20 animate-pulse-slow" />
@@ -97,7 +97,7 @@ export function AuthPage() {
             <Mascot />
             <div className="text-center">
               <h1 className="text-3xl font-black text-white tracking-tight font-display">
-                LexoMaster
+                ESL Learning
               </h1>
               <p className="text-white/80 text-sm font-medium mt-0.5">
                 Learn English · Level Up · Have Fun
