@@ -32,7 +32,10 @@ jobs:
 
       - name: Build
         env:
-          GITHUB_PAGES_BASE: /${{ github.event.repository.name }}/
+          # NOTE: vite.config.ts now uses a relative base ('./') so no
+          # GITHUB_PAGES_BASE / repo-name env var is needed here anymore —
+          # this is what fixes the blank-page-on-GitHub-Pages issue for good,
+          # since it no longer depends on the repo name matching anything.
           # Shared vocabulary source — see .env.example / MIGRATION_GUIDE.md.
           # Add these as repo secrets: Settings → Secrets and variables →
           # Actions → New repository secret. They get baked into the static
