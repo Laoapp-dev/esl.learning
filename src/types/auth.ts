@@ -20,6 +20,13 @@ export interface AuthUser {
   pretestScore?: number;
   pretestLevel?: string;
   pretestDate?: string;
+  // Full name + country, collected at registration (incl. after Google sign-in)
+  fullName?: string;
+  country?: string;
+  // How this account authenticates — password accounts can still change
+  // password; 'google' accounts sign in exclusively via Google popup.
+  authProvider?: 'password' | 'google';
+  googleUid?: string;
 }
 
 export interface AuthState {
@@ -37,6 +44,18 @@ export interface RegisterCredentials {
   username: string;
   email: string;
   password: string;
+  fullName: string;
+  country: string;
+}
+
+// Data collected after a successful Google popup sign-in, before we know
+// whether this is a brand-new account (needs Full Name + Country) or an
+// existing one (logs straight in).
+export interface GoogleProfileDraft {
+  googleUid: string;
+  email: string;
+  suggestedName: string;
+  avatar?: string;
 }
 
 export interface StoredCredentials {
