@@ -1,6 +1,6 @@
 import { createContext, useContext, useState, useCallback, useEffect, type ReactNode } from 'react';
 import { v4 as uuidv4 } from 'uuid';
-import type { AuthUser, AuthState, LoginCredentials, RegisterCredentials, GithubConfig } from '@/types/auth';
+import type { AuthUser, AuthState, LoginCredentials, RegisterCredentials, GithubConfig, GoogleProfileDraft } from '@/types/auth';
 import { AUTH_STORAGE_KEY, AUTH_CREDS_KEY, AUTH_SESSION_KEY, GITHUB_SYNC_KEY } from '@/types/auth';
 
 // Simple hash for demo (in production, use bcrypt on a server)
@@ -109,6 +109,8 @@ function ensureAdminExists() {
 interface AuthContextType extends AuthState {
   login: (creds: LoginCredentials, remember?: boolean) => Promise<{ success: boolean; error?: string }>;
   register: (creds: RegisterCredentials) => Promise<{ success: boolean; error?: string }>;
+  loginWithGoogle: () => Promise<{ success: boolean; error?: string; needsProfile?: boolean; draft?: GoogleProfileDraft }>;
+  completeGoogleProfile: (draft: GoogleProfileDraft, fullName: string, country: string) => Promise<{ success: boolean; error?: string }>;
   logout: () => void;
   getAllUsers: () => AuthUser[];
   updateUser: (id: string, updates: Partial<AuthUser>) => void;
@@ -182,6 +184,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       return { success: false, error: 'An account with this email already exists' };
     }
     if (creds.password.length < 6) return { success: false, error: 'Password must be at least 6 characters' };
+    if (!creds.fullName?.trim()) return { success: false, error: 'Full name is required' };
+    if (!creds.country?.trim()) return { success: false, error: 'Please select your country' };
     const id = uuidv4();
     const newUser: AuthUser = {
       id,
@@ -195,6 +199,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       currentStreak: 0,
       longestStreak: 0,
       dataKey: `lexicon_data_${id}`,
+      fullName: creds.fullName.trim(),
+      country: creds.country.trim(),
+      authProvider: 'password',
     };
     users.push(newUser);
     saveUsers(users);
@@ -208,11 +215,115 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return { success: true };
   }, []);
 
+  // ── Sign in with Google ──────────────────────────────────────────────────────
+  // Step 1: open the Google popup. If an account with this email already
+  // exists, log straight in (7-day remembered session, same as password
+  // login). If it's a brand-new email, DON'T create the account yet — hand
+  // back a draft profile so the UI can collect Full Name + Country first.
+  const loginWithGoogle = useCallback(async (): Promise<{
+    success: boolean; error?: string; needsProfile?: boolean; draft?: GoogleProfileDraft;
+  }> => {
+    try {
+      const { auth, googleProvider, firebaseConfigured } = await import('@/lib/firebase');
+      if (!firebaseConfigured()) {
+        return { success: false, error: 'Google sign-in is not configured for this app yet. Ask the admin to set up Firebase Authentication.' };
+      }
+      const { signInWithPopup } = await import('firebase/auth');
+      const result = await signInWithPopup(auth, googleProvider);
+      const gUser = result.user;
+      const email = (gUser.email || '').toLowerCase();
+      if (!email) return { success: false, error: 'Your Google account has no email address to sign in with' };
+
+      const users = loadUsers();
+      const existing = users.find(u => u.email.toLowerCase() === email);
+
+      if (existing) {
+        if (!existing.isActive) return { success: false, error: 'Account is deactivated. Contact admin.' };
+        const updated: AuthUser = {
+          ...existing,
+          lastLogin: new Date().toISOString(),
+          authProvider: existing.authProvider ?? 'google',
+          googleUid: gUser.uid,
+          avatar: existing.avatar || gUser.photoURL || undefined,
+        };
+        saveUsers(users.map(u => (u.id === existing.id ? updated : u)));
+        setCurrentUser(updated);
+        // Google sign-in always remembers the session for 7 days.
+        const expireAt = Date.now() + SESSION_DAYS * 24 * 60 * 60 * 1000;
+        localStorage.setItem(SESSION_PERSIST_KEY, existing.id);
+        localStorage.setItem(SESSION_EXPIRE_KEY, String(expireAt));
+        return { success: true };
+      }
+
+      // New Google account — need Full Name + Country before we create it.
+      return {
+        success: true,
+        needsProfile: true,
+        draft: {
+          googleUid: gUser.uid,
+          email,
+          suggestedName: gUser.displayName || '',
+          avatar: gUser.photoURL || undefined,
+        },
+      };
+    } catch (e) {
+      const err = e as { code?: string; message?: string };
+      if (err.code === 'auth/popup-closed-by-user') return { success: false, error: 'Sign-in cancelled' };
+      return { success: false, error: err.message || 'Google sign-in failed' };
+    }
+  }, []);
+
+  // Step 2: finish creating the account for a brand-new Google sign-in, once
+  // the person has supplied their Full Name and Country.
+  const completeGoogleProfile = useCallback(async (
+    draft: GoogleProfileDraft, fullName: string, country: string
+  ): Promise<{ success: boolean; error?: string }> => {
+    if (!fullName.trim()) return { success: false, error: 'Full name is required' };
+    if (!country.trim()) return { success: false, error: 'Please select your country' };
+
+    const users = loadUsers();
+    if (users.find(u => u.email.toLowerCase() === draft.email)) {
+      return { success: false, error: 'An account with this email already exists' };
+    }
+
+    const id = uuidv4();
+    const newUser: AuthUser = {
+      id,
+      username: fullName.trim(),
+      email: draft.email,
+      role: 'user',
+      joinDate: new Date().toISOString(),
+      isActive: true,
+      cefrLevel: 'A2',
+      dailyGoal: 10,
+      currentStreak: 0,
+      longestStreak: 0,
+      dataKey: `lexicon_data_${id}`,
+      fullName: fullName.trim(),
+      country: country.trim(),
+      authProvider: 'google',
+      googleUid: draft.googleUid,
+      avatar: draft.avatar,
+      lastLogin: new Date().toISOString(),
+    };
+    users.push(newUser);
+    saveUsers(users);
+    setCurrentUser(newUser);
+
+    const expireAt = Date.now() + SESSION_DAYS * 24 * 60 * 60 * 1000;
+    localStorage.setItem(SESSION_PERSIST_KEY, id);
+    localStorage.setItem(SESSION_EXPIRE_KEY, String(expireAt));
+    return { success: true };
+  }, []);
+
   const logout = useCallback(() => {
     setCurrentUser(null);
     sessionStorage.removeItem(AUTH_SESSION_KEY);
     localStorage.removeItem(SESSION_PERSIST_KEY);
     localStorage.removeItem(SESSION_EXPIRE_KEY);
+    // Best-effort — only relevant for accounts that signed in via Google;
+    // harmless no-op otherwise.
+    import('@/lib/firebase').then(({ auth }) => import('firebase/auth').then(({ signOut }) => signOut(auth))).catch(() => {});
   }, []);
 
   const getAllUsers = useCallback(() => loadUsers(), []);
@@ -349,6 +460,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       isOnline,
       login,
       register,
+      loginWithGoogle,
+      completeGoogleProfile,
       logout,
       getAllUsers,
       updateUser,

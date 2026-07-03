@@ -240,7 +240,10 @@ export function useGoogleSheet() {
   const getSharedWords = useCallback((): any[] => {
     try {
       const stored = localStorage.getItem(GS_WORDS_KEY);
-      return stored ? JSON.parse(stored) : [];
+      const parsed = stored ? JSON.parse(stored) : [];
+      // Defensive: drop any null/undefined/word-less entries so callers
+      // (App.tsx → vocabulary.mergeSharedWords) never see them.
+      return Array.isArray(parsed) ? parsed.filter((w) => w && typeof w === 'object' && w.word) : [];
     } catch { return []; }
   }, []);
 

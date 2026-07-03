@@ -270,6 +270,29 @@ function loadFromStorage<T>(key: string, fallback: T): T {
   }
 }
 
+/**
+ * Defensive sanitizer for any array of "word-like" objects coming from
+ * localStorage, Firestore, Google Sheets, GitHub, or CSV import.
+ *
+ * ROOT CAUSE OF THE "Cannot read properties of null (reading 'word')" CRASH:
+ * every one of those sources can — through an old app version, a corrupted
+ * localStorage write, a half-finished sync, or a malformed CSV row — end up
+ * with a `null`/`undefined` element sitting in an otherwise valid array.
+ * Every place in the app that later does `words.map(w => w.word)` (Quiz,
+ * Flashcards, Matching, Dashboard, WordList, …) then throws the instant it
+ * hits that hole, which crashes the whole render tree and trips the
+ * ErrorBoundary. Filtering the array once, right where it enters app state,
+ * makes every downstream `.word` access safe without having to defensively
+ * guard dozens of call sites individually.
+ */
+function sanitizeWords(arr: unknown): VocabularyWord[] {
+  if (!Array.isArray(arr)) return [];
+  return arr.filter(
+    (w): w is VocabularyWord =>
+      !!w && typeof w === 'object' && typeof (w as any).word === 'string' && (w as any).word.trim() !== ''
+  );
+}
+
 function saveToStorage<T>(key: string, value: T) {
   try {
     localStorage.setItem(key, JSON.stringify(value));
@@ -292,13 +315,21 @@ const GS_WORDS_KEY = 'moe_gsheet_words';
 function upsertWords(base: VocabularyWord[], incoming: Partial<VocabularyWord>[]): {
   result: VocabularyWord[]; added: number; updated: number;
 } {
+  // Defensive: strip any null/undefined/word-less entries before we touch
+  // them. This is what prevents "Cannot read properties of null (reading
+  // 'word')" — see sanitizeWords() above for the full explanation.
+  const safeBase = sanitizeWords(base);
+  const safeIncoming = Array.isArray(incoming)
+    ? incoming.filter((w): w is Partial<VocabularyWord> => !!w && typeof w === 'object' && !!(w as any).word && String((w as any).word).trim() !== '')
+    : [];
+
   const keyOf = (w: string) => w.toLowerCase().trim();
-  const indexByKey = new Map(base.map((w, i) => [keyOf(w.word), i]));
-  const next = [...base];
+  const indexByKey = new Map(safeBase.map((w, i) => [keyOf(w.word), i]));
+  const next = [...safeBase];
   const toAppend: VocabularyWord[] = [];
   let added = 0, updated = 0;
 
-  for (const raw of incoming) {
+  for (const raw of safeIncoming) {
     const w = raw as VocabularyWord;
     if (!w.word || !w.word.trim()) continue;
     const key = keyOf(w.word);
@@ -344,19 +375,19 @@ function upsertWords(base: VocabularyWord[], incoming: Partial<VocabularyWord>[]
     }
   }
 
-  return { result: added + updated > 0 ? [...next, ...toAppend] : base, added, updated };
+  return { result: added + updated > 0 ? [...next, ...toAppend] : safeBase, added, updated };
 }
 
 export function useVocabulary(dataKeyPrefix?: string) {
   const KEYS = useMemo(() => makeStorageKeys(dataKeyPrefix), [dataKeyPrefix]);
 
   const [words, setWords] = useState<VocabularyWord[]>(() => {
-    const userWords = loadFromStorage<VocabularyWord[]>(KEYS.words, INITIAL_WORDS);
+    const userWords = sanitizeWords(loadFromStorage<VocabularyWord[]>(KEYS.words, INITIAL_WORDS));
     // Merge shared sheet words (written by admin sync) into this user's word list
     // on every app load so ALL users see the latest synced vocabulary —
     // upsert, not skip-only, so edits to existing words show up too.
     try {
-      const sheetWords: VocabularyWord[] = JSON.parse(localStorage.getItem(GS_WORDS_KEY) || '[]');
+      const sheetWords = sanitizeWords(JSON.parse(localStorage.getItem(GS_WORDS_KEY) || '[]'));
       if (sheetWords.length > 0) {
         return upsertWords(userWords, sheetWords).result;
       }

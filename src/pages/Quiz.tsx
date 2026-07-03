@@ -146,7 +146,7 @@ export function Quiz() {
   };
 
   const currentQuestion = questions[currentQuestionIndex];
-  const progress = ((currentQuestionIndex + (showExplanation ? 1 : 0)) / questions.length) * 100;
+  const progress = questions.length > 0 ? ((currentQuestionIndex + (showExplanation ? 1 : 0)) / questions.length) * 100 : 0;
 
   if (showSetup) {
     return (
@@ -300,6 +300,14 @@ export function Quiz() {
         </div>
       </motion.div>
     );
+  }
+
+  if (!currentQuestion) {
+    // Defensive fallback: word list changed mid-quiz (e.g. a sync merged in
+    // new words) and the question index no longer lines up. Send the person
+    // back to setup instead of crashing on `currentQuestion.word`.
+    setShowSetup(true);
+    return null;
   }
 
   return (

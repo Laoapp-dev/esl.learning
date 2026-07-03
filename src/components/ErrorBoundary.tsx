@@ -50,6 +50,40 @@ export class ErrorBoundary extends Component<Props, State> {
     }
   };
 
+  // Repairs corrupted word-list data in localStorage (e.g. a stray null
+  // entry from an old app version or an interrupted sync) without touching
+  // login, streaks, or anything else — then reloads. This is what actually
+  // breaks an otherwise-permanent crash loop, since a plain reload alone
+  // re-reads the same corrupted data and crashes again immediately.
+  handleFixAndReload = () => {
+    try {
+      const isWordArray = (v: unknown) => Array.isArray(v);
+      const cleanWords = (arr: any[]) =>
+        arr.filter(w => w && typeof w === 'object' && typeof w.word === 'string' && w.word.trim() !== '');
+
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (!key) continue;
+        const looksLikeWordsKey = key.endsWith('_words') || key === 'moe_gsheet_words';
+        if (!looksLikeWordsKey) continue;
+        try {
+          const raw = localStorage.getItem(key);
+          if (!raw) continue;
+          const parsed = JSON.parse(raw);
+          if (isWordArray(parsed)) {
+            localStorage.setItem(key, JSON.stringify(cleanWords(parsed)));
+          }
+        } catch {
+          // Unparseable — drop it entirely rather than leave broken JSON.
+          localStorage.removeItem(key);
+        }
+      }
+    } catch {
+      // localStorage unavailable — nothing to fix, just fall through to reload.
+    }
+    this.handleReload();
+  };
+
   render() {
     if (this.state.hasError) {
       return (
@@ -74,21 +108,42 @@ export class ErrorBoundary extends Component<Props, State> {
             is usually fixed by reloading — your saved words and progress are
             not affected, they're stored safely in this browser.
           </p>
-          <button
-            onClick={this.handleReload}
-            style={{
-              background: '#00B4D8',
-              color: 'white',
-              fontWeight: 700,
-              border: 'none',
-              borderRadius: 12,
-              padding: '12px 24px',
-              cursor: 'pointer',
-              fontSize: 14,
-            }}
-          >
-            Reload App
-          </button>
+          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', justifyContent: 'center' }}>
+            <button
+              onClick={this.handleReload}
+              style={{
+                background: '#00B4D8',
+                color: 'white',
+                fontWeight: 700,
+                border: 'none',
+                borderRadius: 12,
+                padding: '12px 24px',
+                cursor: 'pointer',
+                fontSize: 14,
+              }}
+            >
+              Reload App
+            </button>
+            <button
+              onClick={this.handleFixAndReload}
+              style={{
+                background: 'transparent',
+                color: 'white',
+                fontWeight: 700,
+                border: '1px solid rgba(255,255,255,0.35)',
+                borderRadius: 12,
+                padding: '12px 24px',
+                cursor: 'pointer',
+                fontSize: 14,
+              }}
+            >
+              Fix &amp; Reload
+            </button>
+          </div>
+          <p style={{ opacity: 0.5, fontSize: 12, marginTop: 10, maxWidth: 380 }}>
+            Still stuck after reloading? "Fix &amp; Reload" repairs corrupted word-list data
+            without touching your login or progress.
+          </p>
           {this.state.error && (
             <details style={{ marginTop: 24, maxWidth: 560, opacity: 0.6, fontSize: 12, textAlign: 'left' }}>
               <summary style={{ cursor: 'pointer' }}>Technical details</summary>
