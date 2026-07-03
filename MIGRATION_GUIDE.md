@@ -6,7 +6,39 @@ free tiers.
 
 ---
 
-## 1. What was actually wrong
+## 0. App renamed + blank-page fix (read this first)
+
+**Renamed:** "LexoMaster" → "ESL Learning" everywhere — browser tab title, PWA
+name/icon label, login screen, sidebar, meta tags, `package.json`.
+
+**Blank page on GitHub Pages — root cause:** `vite.config.ts` built asset
+URLs using an *absolute* path like `/esl.learning/`, which only works if it
+exactly matches your live URL's subpath. If that build-time value was ever
+missing or mismatched (e.g. built without the right env var, or the repo
+name changed), every JS/CSS file 404s silently, `index.html` loads but the
+app itself never starts — which is exactly a blank white page with no error
+shown, because there's no JS running yet to show one.
+
+**Fix:** switched to a *relative* base path (`base: './'` in
+`vite.config.ts`). Every asset is now requested relative to wherever
+`index.html` itself was loaded from, so it works correctly no matter what
+subpath, repo name, or custom domain the site ends up on — this class of bug
+can't happen again. Verified by building the app and serving it locally
+under a simulated `/esl.learning/` subpath: all assets return 200.
+
+After redeploying, if you still see a blank page:
+1. Hard refresh (Ctrl/Cmd+Shift+R) — old cached assets from before this fix
+   can otherwise stick around, especially with the PWA service worker.
+2. GitHub repo → Settings → Pages → confirm **Source** is set to
+   "GitHub Actions" (not "Deploy from a branch") — if it's on a branch, the
+   workflow's build output isn't what's actually being served.
+3. Open DevTools (F12) → Console tab → check for any red errors and share
+   them if the page is still blank; that pinpoints anything beyond the
+   asset-path issue.
+
+---
+
+
 
 Your Google Sheet sync used a helper called `mergeSharedWords`, which checks
 "does this word already exist?" before adding it. But the **admin Sync

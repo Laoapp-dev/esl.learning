@@ -3,7 +3,18 @@ import react from "@vitejs/plugin-react"
 import { defineConfig } from "vite"
 import { VitePWA } from "vite-plugin-pwa"
 
-const base = process.env.GITHUB_PAGES_BASE || '/'
+// IMPORTANT — GitHub Pages blank-page fix:
+// Project pages are served from a subpath, e.g. https://<user>.github.io/<repo>/.
+// Using an ABSOLUTE base like '/repo-name/' only works if it exactly matches
+// the live URL's subpath — if the repo gets renamed, deployed from a fork, or
+// the build ever runs without the GITHUB_PAGES_BASE env var set, every asset
+// (JS/CSS) 404s and the page renders completely blank (index.html loads, but
+// the app's script never runs). A RELATIVE base ('./') sidesteps this
+// entirely: every asset is requested relative to wherever index.html itself
+// was served from, so it works correctly no matter what subpath, repo name,
+// or custom domain the site ends up on. Combined with HashRouter (already
+// used in main.tsx), this is the most robust setup for GitHub Pages.
+const base = './'
 
 export default defineConfig({
   base,
@@ -25,8 +36,8 @@ export default defineConfig({
         'icons/icon-512-maskable.png',
       ],
       manifest: {
-        name: 'LexoMaster',
-        short_name: 'LexoMaster',
+        name: 'ESL Learning',
+        short_name: 'ESL Learning',
         description: 'English vocabulary learning app with flashcards, quizzes, and more.',
         theme_color: '#1A1A2E',
         background_color: '#1A1A2E',
@@ -52,7 +63,7 @@ export default defineConfig({
             sizes: '512x512',
             type: 'image/png',
             form_factor: 'narrow',
-            label: 'LexoMaster — Vocabulary Learning',
+            label: 'ESL Learning — Vocabulary Learning',
           },
         ],
         categories: ['education', 'productivity'],
