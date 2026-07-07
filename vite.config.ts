@@ -93,14 +93,45 @@ export default defineConfig({
         ],
       },
       workbox: {
-        // Cache everything for full offline support
-        globPatterns: ['**/*.{js,css,html,ico,png,svg,woff,woff2,ttf,eot}'],
+        // CRITICAL: vite-plugin-pwa silently defaults navigateFallback to
+        // 'index.html' unless told otherwise. That generates its own
+        // NavigationRoute bound to the precached index.html, registered
+        // BEFORE the runtimeCaching rule below — and Workbox uses the FIRST
+        // matching route, so that default was silently winning and serving
+        // a precached/stale index.html for every navigation regardless of
+        // what our NetworkFirst rule said. This is what made the previous
+        // fix look like it did nothing. Explicitly disabling it here is
+        // required for the runtimeCaching navigate rule below to actually
+        // take effect at all.
+        navigateFallback: undefined,
+        // 'html' is deliberately excluded from precaching now; see the
+        // navigate-request runtimeCaching rule below instead, which fetches
+        // fresh HTML from the network whenever a network is available.
+        globPatterns: ['**/*.{js,css,ico,png,svg,woff,woff2,ttf,eot}'],
         // Clean up old cache on activation
         cleanupOutdatedCaches: true,
         // Client claim immediately
         clientsClaim: true,
         skipWaiting: true,
         runtimeCaching: [
+          {
+            // Matches the actual page navigation (opening/reloading the app).
+            // NetworkFirst = always try the network first, with a short
+            // timeout, and only fall back to a cached copy if the device is
+            // genuinely offline. This guarantees every normal (online) app
+            // open gets the current deploy's HTML — and therefore whatever
+            // current JS/fixes it references — instead of depending on the
+            // service worker's own update-detection timing, which is exactly
+            // what kept failing silently on mobile.
+            urlPattern: ({ request }) => request.mode === 'navigate',
+            handler: 'NetworkFirst',
+            options: {
+              cacheName: 'html-cache',
+              networkTimeoutSeconds: 3,
+              expiration: { maxEntries: 5, maxAgeSeconds: 60 * 60 * 24 },
+              cacheableResponse: { statuses: [0, 200] },
+            },
+          },
           {
             urlPattern: /^https:\/\/fonts\.googleapis\.com\/.*/i,
             handler: 'CacheFirst',

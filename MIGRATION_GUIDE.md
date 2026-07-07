@@ -1,5 +1,46 @@
 # Migration Guide — Excel → Firestore → App (no more duplicates)
 
+## ⚠️ Repo mix-up — please read this first
+
+While investigating a duplicate-word report, I checked both
+`github.com/Laoapp-dev/esl.app` and `github.com/Laoapp-dev/esl.learning` —
+**these are two different repositories.** The one actually live at your
+GitHub Pages URL (`laoapp-dev.github.io/esl.learning/`) is **`esl.learning`**.
+`esl.app` is an older/stale copy: it's still on the old absolute base path,
+old "LexoMaster" branding, and has no Firebase/Google sign-in code at all.
+If you're editing or checking things in `esl.app`, that's why changes never
+seem to show up on the live site — it isn't the one being deployed. Going
+forward, do everything (pushes, secrets, Pages settings) in `esl.learning`.
+This zip's code is built on top of `esl.learning`.
+
+## Duplicate words — found real corruption in your live data
+
+I checked your actual synced data in `esl.learning`'s `data/users/*/vocab.json`
+files. One user's word list had **1077 total entries, only ~300 of them
+unique** — one word ("diligent") appeared 11 times with identical content.
+This is leftover corruption from before the sync-dedup fix existed: that fix
+stops *new* duplicates but doesn't clean up data that was already duplicated
+in local storage or a GitHub backup before the fix was deployed.
+
+**New: an admin-side duplicate check + cleanup tool**, in Admin Panel →
+Google Sheet tab:
+- **Check for Duplicates** — re-pulls your sheet (without merging anything)
+  and reports any word appearing on more than one row there, *and* separately
+  scans the app's current word list for existing duplicate entries. These
+  are checked independently since they're different problems: one is about
+  your source data, the other is about data already loaded into the app.
+- **Clean Up Duplicates Now** — collapses existing duplicate entries in the
+  app down to one per word. Keeps the most complete content across the
+  copies (first non-empty field wins) and merges study progress (highest
+  study/correct count, starred/learned if any copy was) instead of
+  arbitrarily picking one copy and discarding progress on the others.
+
+Run "Clean Up Duplicates Now" once after deploying this update to fix the
+existing corruption — new syncs won't need it since they no longer create
+duplicates in the first place.
+
+---
+
 This document explains (1) the bug that was fixed, (2) how to set up Firestore
 as your new vocabulary source of truth, and (3) how to keep everything on
 free tiers.
