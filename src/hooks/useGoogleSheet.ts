@@ -229,6 +229,38 @@ export function useGoogleSheet() {
     }
   }, [config.mode, fetchFromCsv, fetchFromScript, saveConfig]);
 
+  // ── Check the SHEET ITSELF for duplicate rows, without merging anything ─────
+  // Answers "does my Google Sheet have the same word typed in more than one
+  // row?" — a separate question from app-side duplication (which
+  // mergeSharedWords/dedupeWords already handle). Useful for an admin who
+  // wants to clean the source data, not just the app's copy of it.
+  const checkForDuplicates = useCallback(async (
+    overrides?: { csvUrl?: string; scriptUrl?: string; mode?: 'csv' | 'script' }
+  ): Promise<{ success: boolean; totalRows: number; duplicates: { word: string; count: number }[]; error?: string }> => {
+    try {
+      const mode = overrides?.mode ?? config.mode;
+      const rows = mode === 'script'
+        ? await fetchFromScript(overrides?.scriptUrl)
+        : await fetchFromCsv(overrides?.csvUrl);
+
+      const counts = new Map<string, { word: string; count: number }>();
+      for (const r of rows) {
+        if (!r?.word) continue;
+        const key = r.word.toLowerCase().trim();
+        const g = counts.get(key);
+        if (g) g.count++;
+        else counts.set(key, { word: r.word, count: 1 });
+      }
+      const duplicates = Array.from(counts.values())
+        .filter(g => g.count > 1)
+        .sort((a, b) => b.count - a.count);
+
+      return { success: true, totalRows: rows.length, duplicates };
+    } catch (err) {
+      return { success: false, totalRows: 0, duplicates: [], error: (err as Error).message };
+    }
+  }, [config.mode, fetchFromCsv, fetchFromScript]);
+
   // ── Test connection (dry run, no import) ─────────────────────────────────────
   const testConnection = useCallback(async (
     overrides?: { csvUrl?: string; scriptUrl?: string; mode?: 'csv' | 'script' }
@@ -262,6 +294,6 @@ export function useGoogleSheet() {
     config, saveConfig,
     syncing, error, setError,
     lastSync,
-    syncNow, testConnection, getSharedWords,
+    syncNow, testConnection, getSharedWords, checkForDuplicates,
   };
 }

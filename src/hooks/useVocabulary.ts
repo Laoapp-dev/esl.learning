@@ -271,18 +271,25 @@ function loadFromStorage<T>(key: string, fallback: T): T {
 }
 
 /**
- * Defensively strips any null/undefined/malformed entries out of a word
- * array. Corrupted data can end up in localStorage (or in a shared sync
- * payload) from an old app version, a bad CSV row, or a partial write — and
- * without this guard, a single null entry crashes the entire app on load
- * (upsertWords/indexByKey reads `.word` on every entry). This makes the app
- * self-heal from any bad data it encounters instead of hard-crashing.
+ * Defensive sanitizer for any array of "word-like" objects coming from
+ * localStorage, Firestore, Google Sheets, GitHub, or CSV import.
+ *
+ * ROOT CAUSE OF THE "Cannot read properties of null (reading 'word')" CRASH:
+ * every one of those sources can — through an old app version, a corrupted
+ * localStorage write, a half-finished sync, or a malformed CSV row — end up
+ * with a `null`/`undefined` element sitting in an otherwise valid array.
+ * Every place in the app that later does `words.map(w => w.word)` (Quiz,
+ * Flashcards, Matching, Dashboard, WordList, …) then throws the instant it
+ * hits that hole, which crashes the whole render tree and trips the
+ * ErrorBoundary. Filtering the array once, right where it enters app state,
+ * makes every downstream `.word` access safe without having to defensively
+ * guard dozens of call sites individually.
  */
 function sanitizeWords(arr: unknown): VocabularyWord[] {
   if (!Array.isArray(arr)) return [];
   return arr.filter(
     (w): w is VocabularyWord =>
-      !!w && typeof w === 'object' && typeof (w as VocabularyWord).word === 'string' && (w as VocabularyWord).word.trim().length > 0
+      !!w && typeof w === 'object' && typeof (w as any).word === 'string' && (w as any).word.trim() !== ''
   );
 }
 
@@ -308,15 +315,21 @@ const GS_WORDS_KEY = 'moe_gsheet_words';
 function upsertWords(base: VocabularyWord[], incoming: Partial<VocabularyWord>[]): {
   result: VocabularyWord[]; added: number; updated: number;
 } {
-  const cleanBase = sanitizeWords(base);
-  const cleanIncoming = Array.isArray(incoming) ? incoming.filter((w): w is Partial<VocabularyWord> => !!w && typeof w === 'object') : [];
+  // Defensive: strip any null/undefined/word-less entries before we touch
+  // them. This is what prevents "Cannot read properties of null (reading
+  // 'word')" — see sanitizeWords() above for the full explanation.
+  const safeBase = sanitizeWords(base);
+  const safeIncoming = Array.isArray(incoming)
+    ? incoming.filter((w): w is Partial<VocabularyWord> => !!w && typeof w === 'object' && !!(w as any).word && String((w as any).word).trim() !== '')
+    : [];
+
   const keyOf = (w: string) => w.toLowerCase().trim();
-  const indexByKey = new Map(cleanBase.map((w, i) => [keyOf(w.word), i]));
-  const next = [...cleanBase];
+  const indexByKey = new Map(safeBase.map((w, i) => [keyOf(w.word), i]));
+  const next = [...safeBase];
   const toAppend: VocabularyWord[] = [];
   let added = 0, updated = 0;
 
-  for (const raw of cleanIncoming) {
+  for (const raw of safeIncoming) {
     const w = raw as VocabularyWord;
     if (!w.word || !w.word.trim()) continue;
     const key = keyOf(w.word);
@@ -362,7 +375,7 @@ function upsertWords(base: VocabularyWord[], incoming: Partial<VocabularyWord>[]
     }
   }
 
-  return { result: added + updated > 0 ? [...next, ...toAppend] : base, added, updated };
+  return { result: added + updated > 0 ? [...next, ...toAppend] : safeBase, added, updated };
 }
 
 export function useVocabulary(dataKeyPrefix?: string) {
@@ -460,17 +473,15 @@ export function useVocabulary(dataKeyPrefix?: string) {
   }, []);
 
   const importWords = useCallback((newWords: Omit<VocabularyWord, 'id' | 'dateAdded' | 'studyCount' | 'correctCount' | 'isLearned' | 'difficulty'>[]) => {
-    const imported = (Array.isArray(newWords) ? newWords : [])
-      .filter((w): w is typeof w => !!w && typeof w === 'object' && typeof w.word === 'string' && w.word.trim().length > 0)
-      .map(w => ({
-        ...w,
-        id: uuidv4(),
-        dateAdded: new Date().toISOString(),
-        studyCount: 0,
-        correctCount: 0,
-        isLearned: false,
-        difficulty: 'medium' as const,
-      }));
+    const imported = newWords.map(w => ({
+      ...w,
+      id: uuidv4(),
+      dateAdded: new Date().toISOString(),
+      studyCount: 0,
+      correctCount: 0,
+      isLearned: false,
+      difficulty: 'medium' as const,
+    }));
     setWords(prev => [...imported, ...prev]);
     return imported.length;
   }, []);
@@ -639,6 +650,72 @@ export function useVocabulary(dataKeyPrefix?: string) {
   // This is the ONLY function that should be used to bring in words from an
   // external source (sheet/Firestore/GitHub/Excel). Never use importWords for
   // that — importWords always appends and will duplicate on every sync.
+  // Scans the CURRENT word list for duplicates (by normalized word text) and
+  // reports them without changing anything — used to show the admin exactly
+  // what's duplicated before/without committing to a cleanup.
+  const findDuplicateWords = useCallback((): { word: string; count: number; ids: string[] }[] => {
+    const groups = new Map<string, { word: string; ids: string[] }>();
+    for (const w of words) {
+      if (!w.word) continue;
+      const key = w.word.toLowerCase().trim();
+      const g = groups.get(key);
+      if (g) g.ids.push(w.id);
+      else groups.set(key, { word: w.word, ids: [w.id] });
+    }
+    return Array.from(groups.values())
+      .filter(g => g.ids.length > 1)
+      .map(g => ({ word: g.word, count: g.ids.length, ids: g.ids }))
+      .sort((a, b) => b.count - a.count);
+  }, [words]);
+
+  // Collapses existing duplicates (by normalized word text) down to ONE entry
+  // per word. This is the cleanup for words that got duplicated by the old
+  // sync bug BEFORE mergeSharedWords existed — that fix only stops NEW
+  // duplicates, it doesn't retroactively fix data that's already duplicated
+  // in a user's local storage or GitHub backup. Keeps the most complete
+  // content (first non-empty field across all copies) and merges study
+  // progress (max study/correct count, starred/learned if ANY copy was,
+  // earliest dateAdded) rather than arbitrarily picking one copy and
+  // discarding a learner's progress on the others.
+  const dedupeWords = useCallback((): { removedCount: number; uniqueCount: number } => {
+    let removedCount = 0;
+    setWords(prev => {
+      const order: string[] = [];
+      const byKey = new Map<string, VocabularyWord>();
+
+      for (const w of prev) {
+        if (!w.word || !w.word.trim()) continue;
+        const key = w.word.toLowerCase().trim();
+        const existing = byKey.get(key);
+        if (!existing) {
+          byKey.set(key, { ...w });
+          order.push(key);
+          continue;
+        }
+        removedCount++;
+        byKey.set(key, {
+          ...existing,
+          definition: existing.definition || w.definition,
+          exampleSentence: existing.exampleSentence || w.exampleSentence,
+          synonym: existing.synonym ?? w.synonym,
+          antonym: existing.antonym ?? w.antonym,
+          category: existing.category ?? w.category,
+          laoTranslation: existing.laoTranslation ?? w.laoTranslation,
+          thaiTranslation: existing.thaiTranslation ?? w.thaiTranslation,
+          studyCount: Math.max(existing.studyCount || 0, w.studyCount || 0),
+          correctCount: Math.max(existing.correctCount || 0, w.correctCount || 0),
+          isStarred: existing.isStarred || w.isStarred,
+          isLearned: existing.isLearned || w.isLearned,
+          dateAdded: existing.dateAdded && w.dateAdded
+            ? (new Date(existing.dateAdded) < new Date(w.dateAdded) ? existing.dateAdded : w.dateAdded)
+            : (existing.dateAdded || w.dateAdded),
+        });
+      }
+      return order.map(k => byKey.get(k)!);
+    });
+    return { removedCount, uniqueCount: words.length - removedCount };
+  }, [words]);
+
   const mergeSharedWords = useCallback((incoming: Partial<VocabularyWord>[]) => {
     let addedCount = 0;
     let updatedCount = 0;
@@ -686,6 +763,8 @@ export function useVocabulary(dataKeyPrefix?: string) {
     updateSettings,
     syncToGoogleSheets,
     mergeSharedWords,
+    findDuplicateWords,
+    dedupeWords,
     resetProgress,
   };
 }

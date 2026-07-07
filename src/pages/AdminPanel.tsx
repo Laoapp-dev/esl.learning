@@ -6,7 +6,7 @@ import {
   Github, Settings2, AlertTriangle, Cloud,
   WifiOff, Database, FileDown, FileUp, Crown, UserX, UserCheck, User,
   Link2, RefreshCw, CheckCircle2, Clock, Info, ExternalLink, Play,
-  Zap, ChevronDown, ChevronUp, Code2,
+  Zap, ChevronDown, ChevronUp, Code2, Search, Sparkles,
 } from 'lucide-react';
 import { useAuth } from '@/hooks/useAuth';
 import { useApp } from '@/App';
@@ -78,6 +78,13 @@ export function AdminPanel() {
   const [gsInterval, setGsInterval] = useState(gs.config.autoIntervalMin);
   const [gsTestResult, setGsTestResult] = useState<{ok:boolean; count:number; msg:string}|null>(null);
   const [gsTesting, setGsTesting] = useState(false);
+  const [dupChecking, setDupChecking] = useState(false);
+  const [dupCleaning, setDupCleaning] = useState(false);
+  const [dupReport, setDupReport] = useState<{
+    sheetTotalRows: number;
+    sheetDuplicates: { word: string; count: number }[];
+    appDuplicates: { word: string; count: number; ids: string[] }[];
+  } | null>(null);
   const [showScriptHelp, setShowScriptHelp] = useState(false);
 
   const refreshUsers = useCallback(() => setUsers(getAllUsers()), [getAllUsers]);
@@ -138,6 +145,43 @@ export function AdminPanel() {
     const r = await gs.syncNow((words) => vocabulary.mergeSharedWords(words));
     if (r.success) addToast(`✅ Synced from sheet (${r.count} rows read) — new/changed words merged, no duplicates`,'success');
     else addToast(`❌ ${r.error}`,'error');
+  };
+
+  // ── Duplicate check & cleanup ────────────────────────────────────────────────
+  // Two separate questions, both worth checking:
+  //  1. Does the SHEET ITSELF have the same word typed on more than one row?
+  //     (a re-pull without merging, purely for inspection)
+  //  2. Does the APP's current word list already have duplicate entries —
+  //     almost certainly leftover from before the sync bug was fixed, since
+  //     that fix only stops NEW duplicates, it doesn't clean up old ones.
+  const handleCheckDuplicates = async () => {
+    setDupChecking(true);
+    setDupReport(null);
+    const appDuplicates = vocabulary.findDuplicateWords();
+    if (gs.config.csvUrl || gs.config.scriptUrl) {
+      const sheetResult = await gs.checkForDuplicates();
+      setDupReport({
+        sheetTotalRows: sheetResult.totalRows,
+        sheetDuplicates: sheetResult.duplicates,
+        appDuplicates,
+      });
+      if (!sheetResult.success) addToast(`Couldn't re-check the sheet: ${sheetResult.error}`, 'error');
+    } else {
+      setDupReport({ sheetTotalRows: 0, sheetDuplicates: [], appDuplicates });
+    }
+    setDupChecking(false);
+  };
+
+  const handleCleanupDuplicates = () => {
+    setDupCleaning(true);
+    const { removedCount, uniqueCount } = vocabulary.dedupeWords();
+    setDupCleaning(false);
+    if (removedCount > 0) {
+      addToast(`🧹 Removed ${removedCount} duplicate entr${removedCount === 1 ? 'y' : 'ies'} — ${uniqueCount} unique words remain`, 'success');
+      setDupReport(prev => prev ? { ...prev, appDuplicates: [] } : prev);
+    } else {
+      addToast('No duplicates found in the app — nothing to clean up', 'success');
+    }
   };
 
   // ── Firestore actions ───────────────────────────────────────────────────────
@@ -508,6 +552,94 @@ function doGet() {
               <div className="flex items-center gap-2 text-xs text-green-700 bg-green-50 dark:bg-green-900/20 rounded-lg px-3 py-2">
                 <Clock className="h-3.5 w-3.5 shrink-0"/>
                 Auto-syncing every {gs.config.autoIntervalMin} minutes
+              </div>
+            )}
+          </div>
+
+          {/* Duplicate check & cleanup */}
+          <div className="bg-card rounded-xl border border-border p-5 space-y-3">
+            <div className="flex items-center gap-2">
+              <Search className="h-5 w-5 text-[#4A90E2]"/>
+              <h2 className="font-semibold text-foreground">Check for Overlapping / Duplicate Words</h2>
+            </div>
+            <p className="text-sm text-muted-foreground">
+              Re-checks your Google Sheet for the same word appearing on more than one row,
+              and separately checks the app's current word list for duplicates already
+              carried over from before syncing was fixed. These are two different things —
+              this checks both.
+            </p>
+            <div className="flex gap-3 flex-wrap">
+              <button onClick={handleCheckDuplicates} disabled={dupChecking}
+                className="flex items-center gap-2 px-4 py-2.5 rounded-xl border border-[#4A90E2] text-[#4A90E2] text-sm font-medium hover:bg-[#4A90E2]/10 transition-colors disabled:opacity-50">
+                {dupChecking ? <Spinner/> : <Search className="h-4 w-4"/>}
+                Check for Duplicates
+              </button>
+            </div>
+
+            {dupReport && (
+              <div className="space-y-3 pt-1">
+                {/* Sheet-side report */}
+                {(gs.config.csvUrl || gs.config.scriptUrl) && (
+                  dupReport.sheetDuplicates.length === 0 ? (
+                    <SuccessBox>
+                      <CheckCircle2 className="h-4 w-4 shrink-0 mt-0.5"/>
+                      <div>Your Google Sheet ({dupReport.sheetTotalRows} rows) has no duplicate words. 👍</div>
+                    </SuccessBox>
+                  ) : (
+                    <ErrorBox>
+                      <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5"/>
+                      <div>
+                        <div className="font-semibold mb-1">
+                          Your Google Sheet has {dupReport.sheetDuplicates.length} word{dupReport.sheetDuplicates.length===1?'':'s'} appearing on more than one row:
+                        </div>
+                        <div className="flex flex-wrap gap-1.5">
+                          {dupReport.sheetDuplicates.slice(0, 30).map(d => (
+                            <span key={d.word} className="px-2 py-0.5 rounded-md bg-red-100 dark:bg-red-900/30 text-xs font-medium">
+                              {d.word} ×{d.count}
+                            </span>
+                          ))}
+                        </div>
+                        <p className="text-xs mt-2 opacity-80">
+                          These are duplicated in the sheet itself — worth deleting the extra
+                          row(s) directly in Google Sheets so the source data is clean too.
+                        </p>
+                      </div>
+                    </ErrorBox>
+                  )
+                )}
+
+                {/* App-side report */}
+                {dupReport.appDuplicates.length === 0 ? (
+                  <SuccessBox>
+                    <CheckCircle2 className="h-4 w-4 shrink-0 mt-0.5"/>
+                    <div>The app's current word list has no duplicate entries. 👍</div>
+                  </SuccessBox>
+                ) : (
+                  <div className="rounded-xl border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 p-4 space-y-3">
+                    <div className="flex items-start gap-2 text-sm text-amber-800 dark:text-amber-300">
+                      <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5"/>
+                      <div>
+                        <div className="font-semibold mb-1">
+                          The app currently has {dupReport.appDuplicates.length} duplicated word{dupReport.appDuplicates.length===1?'':'s'}
+                          {' '}({dupReport.appDuplicates.reduce((s,d)=>s+d.count-1,0)} extra copies total) —
+                          almost certainly left over from before syncing was fixed.
+                        </div>
+                        <div className="flex flex-wrap gap-1.5">
+                          {dupReport.appDuplicates.slice(0, 30).map(d => (
+                            <span key={d.word} className="px-2 py-0.5 rounded-md bg-amber-100 dark:bg-amber-900/40 text-xs font-medium">
+                              {d.word} ×{d.count}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                    <button onClick={handleCleanupDuplicates} disabled={dupCleaning}
+                      className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl bg-amber-600 text-white text-sm font-bold hover:bg-amber-700 transition-colors disabled:opacity-50">
+                      {dupCleaning ? <Spinner/> : <Sparkles className="h-4 w-4"/>}
+                      Clean Up Duplicates Now (keeps progress, removes extras)
+                    </button>
+                  </div>
+                )}
               </div>
             )}
           </div>
