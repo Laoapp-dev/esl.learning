@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
-  Volume2, ArrowLeft, ArrowRight, Star, Bookmark,
+  Volume2, ArrowLeft, ArrowRight, Bookmark,
   Tag, BarChart2, RefreshCw, Lock,
 } from 'lucide-react';
 import { useApp } from '@/App';
@@ -9,67 +9,14 @@ import { useNavigate } from 'react-router-dom';
 import { useSpeech } from '@/hooks/useSpeech';
 import type { VocabularyWord, CEFRLevel } from '@/types/vocabulary';
 import { CEFR_ORDER, UNLOCK_PCT, getMasteryPct, isLevelUnlocked, getPretestLevel } from '@/lib/levelLock';
+import { POS_COLORS, CEFR_STYLE, DiffDots, StarButton } from '@/components/FlashcardVisuals';
 
-// ── Visual tokens (same as WordCard) ──────────────────────────────────────────
-const POS_COLORS: Record<string, string> = {
-  noun:'bg-blue-50 text-blue-700', verb:'bg-green-50 text-green-700',
-  adjective:'bg-purple-50 text-purple-700', adverb:'bg-orange-50 text-orange-700',
-  pronoun:'bg-pink-50 text-pink-700', preposition:'bg-gray-50 text-gray-700',
-  conjunction:'bg-teal-50 text-teal-700', interjection:'bg-red-50 text-red-700',
-  phrase:'bg-indigo-50 text-indigo-700',
-};
-const CEFR_STYLE: Record<string, { bg: string; label: string }> = {
-  A1:{ bg:'bg-emerald-100 text-emerald-700', label:'A1 · Beginner'     },
-  A2:{ bg:'bg-green-100   text-green-700',   label:'A2 · Elementary'   },
-  B1:{ bg:'bg-yellow-100  text-yellow-700',  label:'B1 · Intermediate' },
-  B2:{ bg:'bg-orange-100  text-orange-700',  label:'B2 · Upper-Int.'   },
-  C1:{ bg:'bg-red-100     text-red-700',     label:'C1 · Advanced'     },
-  C2:{ bg:'bg-purple-100  text-purple-700',  label:'C2 · Mastery'      },
-};
-const DIFF_STYLE: Record<string,{color:string;dots:number;label:string}> = {
-  easy:{color:'text-emerald-600',dots:1,label:'Easy'},
-  medium:{color:'text-amber-500',dots:2,label:'Medium'},
-  hard:{color:'text-red-500',dots:3,label:'Hard'},
-};
-function DiffDots({ level }: { level: string }) {
-  const s = DIFF_STYLE[level] ?? DIFF_STYLE.medium;
-  return (
-    <span className={`flex items-center gap-0.5 text-[11px] font-semibold ${s.color}`}>
-      {[1,2,3].map(n=><span key={n} className={`inline-block h-1.5 w-1.5 rounded-full ${n<=s.dots?'bg-current':'bg-current opacity-20'}`}/>)}
-      <span className="ml-1">{s.label}</span>
-    </span>
-  );
-}
+// Visual tokens (POS_COLORS, CEFR_STYLE, DIFF_STYLE, DiffDots, StarButton)
+// live in src/components/FlashcardVisuals.tsx — imported above — so they
+// stay in sync with the Categories study flow as well.
 
 // ── Level mastery helpers now live in src/lib/levelLock.ts (shared with
 // Quiz, Matching, and Spelling so the unlock rules stay identical everywhere)
-
-// ── Star button — ALWAYS reads live state ─────────────────────────────────────
-function StarButton({ wordId, className = '' }: { wordId: string; className?: string }) {
-  const { vocabulary, addToast } = useApp();
-  // Always read live isStarred from vocabulary.words — never from stale snapshot
-  const live = vocabulary.words.find(w => w.id === wordId);
-  const isStarred = live?.isStarred ?? false;
-
-  const handleClick = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    vocabulary.toggleStar(wordId);
-    addToast(isStarred ? 'Removed from Favorites' : '⭐ Added to Favorites', 'success');
-  };
-
-  return (
-    <button
-      onClick={handleClick}
-      className={`rounded-lg p-1.5 transition-all hover:scale-110 active:scale-95 hover:bg-muted/50 ${className}`}
-      title={isStarred ? 'Remove from Favorites (S)' : 'Add to Favorites (S)'}
-    >
-      <Star
-        className={`h-5 w-5 transition-all ${isStarred ? 'fill-[#F5A623] text-[#F5A623] drop-shadow-sm' : 'text-muted-foreground'}`}
-        strokeWidth={1.5}
-      />
-    </button>
-  );
-}
 
 // ── Main ───────────────────────────────────────────────────────────────────────
 export function Flashcards() {
@@ -80,9 +27,17 @@ export function Flashcards() {
   // Read the current user's pretest level (shared helper — see src/lib/levelLock.ts)
   const pretestLevel: string | undefined = getPretestLevel();
 
-  // Session filter set by Favorites / LevelJourney pages
+  // Session filter set by Favorites / LevelJourney / Categories pages.
+  // NOTE: this used to be parsed as JSON (`JSON.parse(ssFilter)`), but
+  // nothing ever wrote JSON here — Favorites.tsx and LevelJourney.tsx both
+  // write plain strings ('favorites' / 'level'). The JSON.parse silently
+  // threw and was swallowed by an empty catch, so navigating from Favorites
+  // into Flashcards quietly showed ALL words instead of just starred ones.
+  // Fixed to match the same plain-string convention already used correctly
+  // by Quiz, Matching, and Spelling.
   const ssFilter = sessionStorage.getItem('moe_study_filter');
   const ssLevel  = sessionStorage.getItem('moe_study_level') as CEFRLevel | null;
+  const ssCategory = sessionStorage.getItem('moe_study_category');
 
   const [selectedLevel, setSelectedLevel] = useState<CEFRLevel | 'all'>('all');
   const [currentIndex, setCurrentIndex]   = useState(0);
@@ -93,19 +48,28 @@ export function Flashcards() {
   const [showSetup, setShowSetup]         = useState(true);
   const [direction, setDirection]         = useState<'left'|'right'|null>(null);
 
+  // The filter set by Favorites / Level Journey / Categories is meant for
+  // this one visit only. Clear it on unmount so navigating away and later
+  // clicking "Flashcards" directly from the sidebar doesn't silently
+  // inherit a stale filter from a completely unrelated earlier session.
+  useEffect(() => {
+    return () => {
+      sessionStorage.removeItem('moe_study_filter');
+      sessionStorage.removeItem('moe_study_level');
+      sessionStorage.removeItem('moe_study_category');
+    };
+  }, []);
+
   // Words for the current level selection (respects session filter)
-  const levelWords: VocabularyWord[] = (() => {
-    if (ssFilter) {
-      try {
-        const f = JSON.parse(ssFilter);
-        if (f.source === 'favorites') return vocabulary.words.filter(w => w.isStarred);
-        if (f.ids) return vocabulary.words.filter(w => f.ids.includes(w.id));
-      } catch {}
-    }
-    if (ssLevel) return vocabulary.words.filter(w => w.cefrLevel === ssLevel);
-    if (selectedLevel === 'all') return vocabulary.words;
-    return vocabulary.words.filter(w => w.cefrLevel === selectedLevel);
-  })();
+  const levelWords: VocabularyWord[] = ssFilter === 'favorites'
+    ? vocabulary.words.filter(w => w.isStarred)
+    : ssFilter === 'category'
+    ? vocabulary.words.filter(w => w.category === ssCategory && (!ssLevel || w.cefrLevel === ssLevel))
+    : ssFilter === 'level' && ssLevel
+    ? vocabulary.words.filter(w => w.cefrLevel === ssLevel)
+    : selectedLevel === 'all'
+    ? vocabulary.words
+    : vocabulary.words.filter(w => w.cefrLevel === selectedLevel);
 
   const startSession = () => {
     const filtered = levelWords.filter(w => !w.isLearned);
@@ -207,6 +171,7 @@ export function Flashcards() {
             </p>
           </div>
 
+          {!ssFilter ? (
           <div>
             <label className="mb-2 block text-sm font-medium text-foreground">Select Level</label>
             <div className="grid grid-cols-4 gap-2">
@@ -238,6 +203,19 @@ export function Flashcards() {
               🔒 Levels unlock when previous level reaches {UNLOCK_PCT}% mastery
             </p>
           </div>
+        ) : (
+          // Arrived via a deep link (Favorites / Level Journey / Categories) —
+          // the level picker above is irrelevant here since the word list is
+          // already fixed by that filter, so show what's actually being
+          // studied instead of a level grid that would silently do nothing.
+          <div className="rounded-xl border border-[#F5A623]/30 bg-[#FFF3DD] px-4 py-3 text-center">
+            <p className="text-sm font-medium text-[#1A1A2E]">
+              {ssFilter === 'favorites' && '⭐ Studying your Favorites'}
+              {ssFilter === 'category' && `🏷️ Studying "${ssCategory}"${ssLevel ? ` · ${ssLevel}` : ' · All levels'}`}
+              {ssFilter === 'level' && `📘 Studying ${ssLevel} words`}
+            </p>
+          </div>
+        )}
 
           <button onClick={startSession}
             className="w-full rounded-[10px] bg-[#F5A623] py-3 text-sm font-semibold text-white hover:bg-[#E09400] transition-colors">

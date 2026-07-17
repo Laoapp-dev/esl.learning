@@ -1,9 +1,10 @@
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import { Layers, HelpCircle, Puzzle, Keyboard, ArrowLeft, TrendingUp, Mic } from 'lucide-react';
+import { Layers, HelpCircle, Puzzle, Keyboard, ArrowLeft, TrendingUp, Tags } from 'lucide-react';
 
 const studyModes = [
   { path: '/study/level',      label: 'Level Journey', icon: TrendingUp,  description: 'Progress A1 → C2 level by level', featured: true  },
+  { path: '/study/categories', label: 'Categories',    icon: Tags,        description: 'Learn & practice by topic',        featured: false },
   { path: '/study/flashcards', label: 'Flashcards',    icon: Layers,      description: 'Flip cards to test your memory',  featured: false },
   { path: '/study/quiz',       label: 'Quiz',          icon: HelpCircle,  description: 'Multiple-choice questions',        featured: false },
   { path: '/study/matching',   label: 'Matching',      icon: Puzzle,      description: 'Match words & definitions',        featured: false },

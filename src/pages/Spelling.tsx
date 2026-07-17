@@ -32,13 +32,28 @@ export function Spelling() {
   // fixed 10 picked one-at-a-time (which could repeat a heavily-weighted
   // level and never even hit 10 distinct words).
   const [sessionQueue, setSessionQueue] = useState<VocabularyWord[]>([]);
+
+  // The filter set by Favorites / Level Journey / Categories is meant for
+  // this one visit only. Clear it on unmount so navigating away and later
+  // clicking "Spelling" directly from the sidebar doesn't silently inherit
+  // a stale filter from a completely unrelated earlier session.
+  useEffect(() => {
+    return () => {
+      sessionStorage.removeItem('moe_study_filter');
+      sessionStorage.removeItem('moe_study_level');
+      sessionStorage.removeItem('moe_study_category');
+    };
+  }, []);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  // Level-journey & favorites session filter
+  // Level-journey / favorites / category session filter (see Categories.tsx)
   const _ssFilter = sessionStorage.getItem('moe_study_filter');
   const _ssLevel  = sessionStorage.getItem('moe_study_level') as CEFRLevel | null;
+  const _ssCategory = sessionStorage.getItem('moe_study_category');
   const words = _ssFilter === 'favorites'
     ? vocabulary.words.filter(w => w.isStarred)
+    : _ssFilter === 'category'
+    ? vocabulary.words.filter(w => w.category === _ssCategory && (!_ssLevel || w.cefrLevel === _ssLevel))
     : _ssFilter === 'level' && _ssLevel
     ? vocabulary.words.filter(w => w.cefrLevel === _ssLevel)
     : selectedLevel === 'all'
@@ -176,6 +191,7 @@ export function Spelling() {
             <p className="mt-1 text-sm text-[#6B6B80]">Listen and type the correct word</p>
           </div>
 
+          {!_ssFilter ? (
           <div>
             <label className="mb-2 block text-sm font-medium text-[#1A1A2E]">Select Level</label>
             <div className="grid grid-cols-4 gap-2">
@@ -210,6 +226,15 @@ export function Spelling() {
               🔒 Levels unlock when previous level reaches {UNLOCK_PCT}% mastery
             </p>
           </div>
+          ) : (
+            <div className="rounded-xl border border-[#F5A623]/30 bg-[#FFF3DD] px-4 py-3 text-center">
+              <p className="text-sm font-medium text-[#1A1A2E]">
+                {_ssFilter === 'favorites' && '⭐ Studying your Favorites'}
+                {_ssFilter === 'category' && `🏷️ Studying "${_ssCategory}"${_ssLevel ? ` · ${_ssLevel}` : ' · All levels'}`}
+                {_ssFilter === 'level' && `📘 Studying ${_ssLevel} words`}
+              </p>
+            </div>
+          )}
 
           <div className="rounded-xl bg-[#F5F5F0] p-4 text-center">
             <div className="flex items-center justify-center gap-2 mb-1">
