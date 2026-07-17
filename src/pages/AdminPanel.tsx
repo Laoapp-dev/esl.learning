@@ -4,14 +4,13 @@ import { motion, AnimatePresence } from 'framer-motion';
 import {
   Users, Shield, Upload, Download, Trash2,
   Github, Settings2, AlertTriangle, Cloud,
-  WifiOff, Database, FileDown, FileUp, Crown, UserX, UserCheck, User,
+  WifiOff, FileDown, FileUp, Crown, UserX, UserCheck, User,
   Link2, RefreshCw, CheckCircle2, Clock, Info, ExternalLink, Play,
   Zap, ChevronDown, ChevronUp, Code2, Search, Sparkles,
 } from 'lucide-react';
 import { useAuth } from '@/hooks/useAuth';
 import { useApp } from '@/App';
 import { useGoogleSheet, toCsvUrl } from '@/hooks/useGoogleSheet';
-import { useFirestoreVocabulary } from '@/hooks/useFirestoreVocabulary';
 import type { AuthUser } from '@/types/auth';
 import Papa from 'papaparse';
 
@@ -44,7 +43,7 @@ function ErrorBox({ children }: { children: React.ReactNode }) {
   return <div className="flex gap-2 rounded-xl bg-red-50 dark:bg-red-900/20 border border-red-100 dark:border-red-800 p-3 text-sm text-red-800 dark:text-red-200">{children}</div>;
 }
 
-type Tab = 'users' | 'gsheet' | 'firestore' | 'sync' | 'data' | 'aikeys';
+type Tab = 'users' | 'gsheet' | 'sync' | 'data' | 'aikeys';
 
 const ADMIN_API_KEYS_KEY = 'moe_admin_api_cfg';
 
@@ -57,7 +56,6 @@ export function AdminPanel() {
   } = useAuth();
   const { vocabulary, addToast, gsheet, githubSync } = useApp();
   const gs = gsheet;
-  const fsVocab = useFirestoreVocabulary();
   const navigate = useNavigate();
 
   const [tab, setTab]   = useState<Tab>('gsheet');
@@ -184,20 +182,6 @@ export function AdminPanel() {
     }
   };
 
-  // ── Firestore actions ───────────────────────────────────────────────────────
-  const handleFirestoreSync = async (forceFull?: boolean) => {
-    const r = await fsVocab.syncNow((words) => vocabulary.mergeSharedWords(words), { forceFull });
-    if (r.success) {
-      addToast(
-        r.read === 0
-          ? '✅ Already up to date — nothing new in Firestore'
-          : `✅ Firestore sync: read ${r.read} changed doc(s) — ${r.added ?? 0} new, ${r.updated ?? 0} updated`,
-        'success'
-      );
-    } else {
-      addToast(`❌ Firestore sync failed: ${r.error}`, 'error');
-    }
-  };
 
   // ── CSV Export/Import ─────────────────────────────────────────────────────────
   const downloadCsv = (content: string, filename: string) => {
@@ -292,7 +276,6 @@ function doGet() {
   const TABS: { id: Tab; label: string; icon: React.ElementType }[] = [
     { id:'users',     label:'Users',        icon:Users  },
     { id:'gsheet',    label:'Google Sheet', icon:Link2  },
-    { id:'firestore', label:'Firestore',    icon:Database },
     { id:'sync',      label:'GitHub Sync',  icon:Github },
     { id:'data',      label:'Import/Export',icon:FileUp },
     { id:'aikeys',    label:'AI Keys',      icon:Zap    },
@@ -674,59 +657,6 @@ function doGet() {
                 className="flex items-center gap-2 px-4 py-2.5 rounded-xl border border-[#4A90E2] text-[#4A90E2] text-sm font-medium hover:bg-[#4A90E2]/10 transition-colors">
                 <ExternalLink className="h-4 w-4"/> Open Google Sheets
               </a>
-            </div>
-          </div>
-        </motion.div>
-      )}
-
-      {/* ══ FIRESTORE ══════════════════════════════════════════════════════════ */}
-      {tab === 'firestore' && (
-        <motion.div initial={{ opacity:0 }} animate={{ opacity:1 }} className="space-y-4">
-
-          <InfoBox>
-            <Info className="h-4 w-4 shrink-0 mt-0.5"/>
-            <div>
-              This is the recommended sync method: your Excel/CSV vocabulary lives
-              in Firestore, and every sync only pulls words that are new or changed
-              since your last sync — no more re-downloading (and duplicating) the
-              whole list every time. To update words, edit your Excel file and run
-              <code className="mx-1 px-1.5 py-0.5 rounded bg-blue-100 dark:bg-blue-900/40 text-xs">npm run import:words -- path/to/file.xlsx</code>
-              on your computer (see MIGRATION_GUIDE.md). Then click Sync below.
-            </div>
-          </InfoBox>
-
-          {fsVocab.getLastSync() && (
-            <SuccessBox>
-              <CheckCircle2 className="h-4 w-4 shrink-0 mt-0.5"/>
-              <div>Last synced: {fsVocab.getLastSync()!.toLocaleString()}</div>
-            </SuccessBox>
-          )}
-
-          {fsVocab.error && (
-            <ErrorBox>
-              <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5"/>
-              <div>{fsVocab.error}</div>
-            </ErrorBox>
-          )}
-
-          <div className="bg-card rounded-xl border border-border p-4 space-y-3">
-            <h3 className="font-semibold text-foreground text-sm flex items-center gap-2">
-              <Database className="h-4 w-4"/> Sync vocabulary from Firestore
-            </h3>
-            <p className="text-xs text-muted-foreground">
-              Requires a Firebase project connected via your .env file
-              (VITE_FIREBASE_* variables) — see MIGRATION_GUIDE.md for setup.
-            </p>
-            <div className="flex gap-3 flex-wrap">
-              <button onClick={() => handleFirestoreSync(false)} disabled={fsVocab.syncing}
-                className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-[#1A1A2E] text-white text-sm font-medium hover:bg-[#1A1A2E]/90 transition-colors disabled:opacity-50">
-                {fsVocab.syncing ? <Spinner/> : <RefreshCw className="h-4 w-4"/>}
-                Sync Now (only new/changed)
-              </button>
-              <button onClick={() => handleFirestoreSync(true)} disabled={fsVocab.syncing}
-                className="flex items-center gap-2 px-4 py-2.5 rounded-xl border border-border text-sm font-medium text-foreground hover:bg-muted transition-colors disabled:opacity-50">
-                <Cloud className="h-4 w-4"/> Force Full Resync
-              </button>
             </div>
           </div>
         </motion.div>

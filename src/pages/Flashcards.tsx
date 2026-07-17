@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Volume2, ArrowLeft, ArrowRight, Star, Bookmark,
@@ -158,12 +158,27 @@ export function Flashcards() {
     setSessionStats({ mastered:0, review:0 });
     setDirection(null);
     setShowSetup(false);
+    isAdvancingRef.current = false;
   };
 
   const handleFlip = useCallback(() => setIsFlipped(p => !p), []);
 
+  // Guards against double-advancing: handleNext schedules a 220ms timeout
+  // before moving to the next card. If the user presses the arrow key or
+  // clicks again inside that window (very easy to do while practicing
+  // quickly), handleNext used to re-run against the same stale
+  // `currentIndex`, queuing a second advance for a card that was only
+  // studied once. That could push currentIndex past the end of the queue,
+  // at which point `queue[currentIndex]` is undefined, `w.id` throws, and
+  // the screen freezes/blanks with no way to continue. This ref makes
+  // handleNext a no-op while a transition is already in flight.
+  const isAdvancingRef = useRef(false);
+
   const handleNext = useCallback((learned: boolean) => {
+    if (isAdvancingRef.current) return;
     const w = queue[currentIndex];
+    if (!w) return; // nothing to act on — avoid throwing on undefined
+    isAdvancingRef.current = true;
     setDirection(learned ? 'right' : 'left');
     vocabulary.updateWord(w.id, {
       isLearned:    learned ? true : w.isLearned,
@@ -177,9 +192,14 @@ export function Flashcards() {
     );
     if (currentIndex < queue.length - 1) {
       setIsFlipped(false);
-      setTimeout(() => { setCurrentIndex(p => p + 1); setDirection(null); }, 220);
+      setTimeout(() => {
+        setCurrentIndex(p => p + 1);
+        setDirection(null);
+        isAdvancingRef.current = false;
+      }, 220);
     } else {
       setSessionComplete(true);
+      isAdvancingRef.current = false;
     }
   }, [queue, currentIndex, vocabulary]);
 
