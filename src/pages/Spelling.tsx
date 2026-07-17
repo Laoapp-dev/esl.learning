@@ -1,13 +1,18 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Volume2, CheckCircle, XCircle, ArrowRight, Keyboard, Flame } from 'lucide-react';
+import { Volume2, CheckCircle, XCircle, ArrowRight, Keyboard, Flame, Lock } from 'lucide-react';
 import { useApp } from '@/App';
 import { useSpeech } from '@/hooks/useSpeech';
 import type { VocabularyWord, CEFRLevel } from '@/types/vocabulary';
+import { getMasteryPct, isLevelUnlocked, getPretestLevel, UNLOCK_PCT, randomSessionSize, pickDiverseSample } from '@/lib/levelLock';
+
+const MIN_WORDS = 10;
+const MAX_WORDS = 20;
 
 export function Spelling() {
   const { vocabulary, addToast } = useApp();
   const { speak } = useSpeech();
+  const pretestLevel = getPretestLevel();
   const [selectedLevel, setSelectedLevel] = useState<CEFRLevel | 'all'>('all');
   const [showSetup, setShowSetup] = useState(true);
   const [currentWord, setCurrentWord] = useState<VocabularyWord | null>(null);
@@ -22,6 +27,11 @@ export function Spelling() {
   const [totalAnswered, setTotalAnswered] = useState(0);
   const [correctCount, setCorrectCount] = useState(0);
   const [sessionComplete, setSessionComplete] = useState(false);
+  // The words for this session, chosen once at startSession — a diverse,
+  // randomized mix of 10-20 words spread across CEFR levels rather than a
+  // fixed 10 picked one-at-a-time (which could repeat a heavily-weighted
+  // level and never even hit 10 distinct words).
+  const [sessionQueue, setSessionQueue] = useState<VocabularyWord[]>([]);
   const inputRef = useRef<HTMLInputElement>(null);
 
   // Level-journey & favorites session filter
@@ -35,35 +45,38 @@ export function Spelling() {
     ? vocabulary.words
     : vocabulary.words.filter(w => w.cefrLevel === selectedLevel);
 
-  const getNextWord = useCallback(() => {
-    const available = words.filter(w => !w.isLearned);
-    if (available.length === 0) {
+  const showWordAt = useCallback((queue: VocabularyWord[], index: number) => {
+    const word = queue[index];
+    if (!word) {
       setSessionComplete(true);
       return;
     }
-    const random = available[Math.floor(Math.random() * available.length)];
-    setCurrentWord(random);
+    setCurrentWord(word);
     setUserInput('');
     setIsChecked(false);
     setIsCorrect(false);
 
     // Auto-play pronunciation if enabled
     setTimeout(() => {
-      speak(random.word);
+      speak(word.word);
     }, 300);
-  }, [words, vocabulary.settings.autoPlayPronunciation, speak]);
+  }, [speak]);
 
   const startSession = () => {
-    if (words.length === 0) {
+    const available = words.filter(w => !w.isLearned);
+    if (available.length === 0) {
       addToast('No words available! Add some words first.', 'warning');
       return;
     }
+    const targetSize = randomSessionSize(MIN_WORDS, MAX_WORDS, available.length);
+    const queue = pickDiverseSample(available, targetSize);
+    setSessionQueue(queue);
     setStreak(0);
     setTotalAnswered(0);
     setCorrectCount(0);
     setSessionComplete(false);
     setShowSetup(false);
-    getNextWord();
+    showWordAt(queue, 0);
   };
 
   const handleCheck = () => {
@@ -98,21 +111,21 @@ export function Spelling() {
   };
 
   const handleNext = () => {
-    if (totalAnswered + 1 >= 10) {
+    if (totalAnswered >= sessionQueue.length) {
       setSessionComplete(true);
 
       // Save session
       vocabulary.addSession({
         date: new Date().toISOString(),
         mode: 'spelling',
-        wordsStudied: totalAnswered + 1,
-        correctAnswers: isCorrect ? correctCount : correctCount,
-        totalQuestions: totalAnswered + 1,
+        wordsStudied: totalAnswered,
+        correctAnswers: correctCount,
+        totalQuestions: totalAnswered,
         duration: 0,
         cefrLevel: selectedLevel === 'all' ? 'A2' : selectedLevel,
       });
     } else {
-      getNextWord();
+      showWordAt(sessionQueue, totalAnswered);
     }
   };
 
@@ -166,20 +179,36 @@ export function Spelling() {
           <div>
             <label className="mb-2 block text-sm font-medium text-[#1A1A2E]">Select Level</label>
             <div className="grid grid-cols-4 gap-2">
-              {['all', 'A1', 'A2', 'B1', 'B2', 'C1', 'C2'].map((level) => (
-                <button
-                  key={level}
-                  onClick={() => setSelectedLevel(level as CEFRLevel | 'all')}
-                  className={`rounded-lg py-2.5 text-sm font-medium transition-colors ${
-                    selectedLevel === level
-                      ? 'bg-[#F5A623] text-white'
-                      : 'bg-white border border-[#E5E5DD] text-[#6B6B80] hover:bg-[#F5F5F0]'
-                  }`}
-                >
-                  {level === 'all' ? 'All' : level}
-                </button>
-              ))}
+              {(['all', 'A1', 'A2', 'B1', 'B2', 'C1', 'C2'] as const).map((level) => {
+                const locked = level !== 'all' && !isLevelUnlocked(vocabulary.words, level as CEFRLevel, pretestLevel);
+                const mastery = level !== 'all' ? getMasteryPct(vocabulary.words, level as CEFRLevel) : null;
+                return (
+                  <button
+                    key={level}
+                    onClick={() => !locked && setSelectedLevel(level)}
+                    disabled={locked}
+                    className={`relative rounded-lg py-2.5 text-sm font-medium transition-colors ${
+                      selectedLevel === level
+                        ? 'bg-[#F5A623] text-white'
+                        : locked
+                        ? 'bg-[#F5F5F0] text-[#9B9BAE]/50 cursor-not-allowed'
+                        : 'bg-white border border-[#E5E5DD] text-[#6B6B80] hover:bg-[#F5F5F0]'
+                    }`}
+                  >
+                    {locked && <Lock className="absolute top-1.5 right-1.5 h-2.5 w-2.5 text-[#9B9BAE]/50" />}
+                    <div>{level === 'all' ? 'All' : level}</div>
+                    {mastery !== null && !locked && mastery > 0 && (
+                      <div className={`text-[9px] mt-0.5 ${selectedLevel === level ? 'text-white/80' : 'text-[#9B9BAE]'}`}>
+                        {mastery}%
+                      </div>
+                    )}
+                  </button>
+                );
+              })}
             </div>
+            <p className="mt-2 text-xs text-[#9B9BAE]">
+              🔒 Levels unlock when previous level reaches {UNLOCK_PCT}% mastery
+            </p>
           </div>
 
           <div className="rounded-xl bg-[#F5F5F0] p-4 text-center">
@@ -188,7 +217,7 @@ export function Spelling() {
               <span className="text-sm font-medium text-[#1A1A2E]">Best Streak: {bestStreak}</span>
             </div>
             <p className="text-xs text-[#6B6B80]">
-              {words.length} words available
+              {words.length} words available · sessions are 10–20 words, mixed across levels
             </p>
           </div>
 
@@ -263,7 +292,7 @@ export function Spelling() {
       <div className="flex items-center justify-between rounded-xl bg-white border border-[#E5E5DD] px-4 py-3">
         <div className="flex items-center gap-4">
           <div className="flex items-center gap-1.5 text-sm text-[#6B6B80]">
-            <span>Q {totalAnswered + 1}/10</span>
+            <span>Q {totalAnswered + 1}/{sessionQueue.length}</span>
           </div>
         </div>
         <div className="flex items-center gap-1.5">
@@ -374,7 +403,7 @@ export function Spelling() {
               onClick={handleNext}
               className="flex w-full items-center justify-center gap-2 rounded-[10px] bg-[#F5A623] py-3 text-sm font-semibold text-white transition-colors hover:bg-[#E09400]"
             >
-              {totalAnswered >= 9 ? 'See Results' : 'Next Word'}
+              {totalAnswered >= sessionQueue.length - 1 ? 'See Results' : 'Next Word'}
               <ArrowRight className="h-4 w-4" strokeWidth={1.5} />
             </button>
           )}

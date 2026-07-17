@@ -8,6 +8,7 @@ import { useApp } from '@/App';
 import { useNavigate } from 'react-router-dom';
 import { useSpeech } from '@/hooks/useSpeech';
 import type { VocabularyWord, CEFRLevel } from '@/types/vocabulary';
+import { CEFR_ORDER, UNLOCK_PCT, getMasteryPct, isLevelUnlocked, getPretestLevel } from '@/lib/levelLock';
 
 // ── Visual tokens (same as WordCard) ──────────────────────────────────────────
 const POS_COLORS: Record<string, string> = {
@@ -40,32 +41,8 @@ function DiffDots({ level }: { level: string }) {
   );
 }
 
-// ── Level mastery helpers ──────────────────────────────────────────────────────
-const CEFR_ORDER: CEFRLevel[] = ['A1','A2','B1','B2','C1','C2'];
-const UNLOCK_PCT = 80;  // % mastery needed to unlock next level
-
-function getMasteryPct(words: VocabularyWord[], level: CEFRLevel): number {
-  const wds = words.filter(w => w.cefrLevel === level);
-  if (wds.length === 0) return 0;
-  return Math.round((wds.filter(w => w.isLearned).length / wds.length) * 100);
-}
-
-function isLevelUnlocked(
-  words: VocabularyWord[],
-  level: CEFRLevel,
-  pretestLevel?: string
-): boolean {
-  const idx = CEFR_ORDER.indexOf(level);
-  if (idx === 0) return true; // A1 always unlocked
-  // If user passed pretest at this level or higher → unlocked
-  if (pretestLevel) {
-    const pretestIdx = CEFR_ORDER.indexOf(pretestLevel as CEFRLevel);
-    if (idx <= pretestIdx) return true;
-  }
-  // Otherwise need to pass previous level at UNLOCK_PCT
-  const prevLevel = CEFR_ORDER[idx - 1];
-  return getMasteryPct(words, prevLevel) >= UNLOCK_PCT;
-}
+// ── Level mastery helpers now live in src/lib/levelLock.ts (shared with
+// Quiz, Matching, and Spelling so the unlock rules stay identical everywhere)
 
 // ── Star button — ALWAYS reads live state ─────────────────────────────────────
 function StarButton({ wordId, className = '' }: { wordId: string; className?: string }) {
@@ -100,17 +77,8 @@ export function Flashcards() {
   const { speak } = useSpeech();
   const navigate = useNavigate();
 
-  // Read the current user's pretest level from localStorage (via auth session)
-  const pretestLevel: string | undefined = (() => {
-    try {
-      const sess = localStorage.getItem('lexicon_auth_session');
-      if (!sess) return undefined;
-      const { userId } = JSON.parse(sess);
-      const users = JSON.parse(localStorage.getItem('lexicon_auth_users') || '[]');
-      const u = users.find((x: any) => x.id === userId);
-      return u?.pretestLevel;
-    } catch { return undefined; }
-  })();
+  // Read the current user's pretest level (shared helper — see src/lib/levelLock.ts)
+  const pretestLevel: string | undefined = getPretestLevel();
 
   // Session filter set by Favorites / LevelJourney pages
   const ssFilter = sessionStorage.getItem('moe_study_filter');

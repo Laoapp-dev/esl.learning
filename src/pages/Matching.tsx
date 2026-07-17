@@ -1,8 +1,14 @@
 import { useState, useEffect, useCallback } from 'react';
 import { motion } from 'framer-motion';
-import { RotateCcw, Clock, Zap, Puzzle } from 'lucide-react';
+import { RotateCcw, Clock, Zap, Puzzle, Lock } from 'lucide-react';
 import { useApp } from '@/App';
 import type { CEFRLevel } from '@/types/vocabulary';
+import { getMasteryPct, isLevelUnlocked, getPretestLevel, UNLOCK_PCT, randomSessionSize, pickDiverseSample } from '@/lib/levelLock';
+
+// Total *cards* per game (each word contributes 2 cards: word + definition),
+// so this yields 5-10 word pairs per session.
+const MIN_CARDS = 10;
+const MAX_CARDS = 20;
 
 interface GameCard {
   id: string;
@@ -15,6 +21,7 @@ interface GameCard {
 
 export function Matching() {
   const { vocabulary, addToast } = useApp();
+  const pretestLevel = getPretestLevel();
   const [selectedLevel, setSelectedLevel] = useState<CEFRLevel | 'all'>('all');
   const [showSetup, setShowSetup] = useState(true);
   const [cards, setCards] = useState<GameCard[]>([]);
@@ -37,10 +44,9 @@ export function Matching() {
     : vocabulary.words.filter(w => w.cefrLevel === selectedLevel);
 
   const startGame = () => {
-    const shuffled = [...words]
-      .filter(w => !w.isLearned)
-      .sort(() => Math.random() - 0.5)
-      .slice(0, 6);
+    const eligible = words.filter(w => !w.isLearned);
+    const targetPairs = Math.floor(randomSessionSize(MIN_CARDS, MAX_CARDS, eligible.length * 2) / 2);
+    const shuffled = pickDiverseSample(eligible, targetPairs);
 
     if (shuffled.length < 3) {
       addToast('Not enough words to match! Add more words or change level.', 'warning');
@@ -185,25 +191,41 @@ export function Matching() {
           <div>
             <label className="mb-2 block text-sm font-medium text-[#1A1A2E]">Select Level</label>
             <div className="grid grid-cols-4 gap-2">
-              {['all', 'A1', 'A2', 'B1', 'B2', 'C1', 'C2'].map((level) => (
-                <button
-                  key={level}
-                  onClick={() => setSelectedLevel(level as CEFRLevel | 'all')}
-                  className={`rounded-lg py-2.5 text-sm font-medium transition-colors ${
-                    selectedLevel === level
-                      ? 'bg-[#F5A623] text-white'
-                      : 'bg-white border border-[#E5E5DD] text-[#6B6B80] hover:bg-[#F5F5F0]'
-                  }`}
-                >
-                  {level === 'all' ? 'All' : level}
-                </button>
-              ))}
+              {(['all', 'A1', 'A2', 'B1', 'B2', 'C1', 'C2'] as const).map((level) => {
+                const locked = level !== 'all' && !isLevelUnlocked(vocabulary.words, level as CEFRLevel, pretestLevel);
+                const mastery = level !== 'all' ? getMasteryPct(vocabulary.words, level as CEFRLevel) : null;
+                return (
+                  <button
+                    key={level}
+                    onClick={() => !locked && setSelectedLevel(level)}
+                    disabled={locked}
+                    className={`relative rounded-lg py-2.5 text-sm font-medium transition-colors ${
+                      selectedLevel === level
+                        ? 'bg-[#F5A623] text-white'
+                        : locked
+                        ? 'bg-[#F5F5F0] text-[#9B9BAE]/50 cursor-not-allowed'
+                        : 'bg-white border border-[#E5E5DD] text-[#6B6B80] hover:bg-[#F5F5F0]'
+                    }`}
+                  >
+                    {locked && <Lock className="absolute top-1.5 right-1.5 h-2.5 w-2.5 text-[#9B9BAE]/50" />}
+                    <div>{level === 'all' ? 'All' : level}</div>
+                    {mastery !== null && !locked && mastery > 0 && (
+                      <div className={`text-[9px] mt-0.5 ${selectedLevel === level ? 'text-white/80' : 'text-[#9B9BAE]'}`}>
+                        {mastery}%
+                      </div>
+                    )}
+                  </button>
+                );
+              })}
             </div>
+            <p className="mt-2 text-xs text-[#9B9BAE]">
+              🔒 Levels unlock when previous level reaches {UNLOCK_PCT}% mastery
+            </p>
           </div>
 
           <div className="rounded-xl bg-[#F5F5F0] p-4 text-center">
             <p className="text-sm text-[#6B6B80]">
-              {words.filter(w => !w.isLearned).length} words available for matching
+              {words.filter(w => !w.isLearned).length} words available · games use 5–10 pairs (10–20 cards), mixed across levels
             </p>
           </div>
 

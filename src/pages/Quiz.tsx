@@ -1,13 +1,18 @@
 import { useState, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ArrowRight, CheckCircle, XCircle, Volume2, Award } from 'lucide-react';
+import { ArrowRight, CheckCircle, XCircle, Volume2, Award, Lock } from 'lucide-react';
 import { useApp } from '@/App';
 import { useSpeech } from '@/hooks/useSpeech';
 import type { CEFRLevel, QuizType, QuizQuestion } from '@/types/vocabulary';
+import { getMasteryPct, isLevelUnlocked, getPretestLevel, UNLOCK_PCT, randomSessionSize, pickDiverseSample } from '@/lib/levelLock';
+
+const MIN_QUESTIONS = 10;
+const MAX_QUESTIONS = 20;
 
 export function Quiz() {
   const { vocabulary } = useApp();
   const { speak } = useSpeech();
+  const pretestLevel = getPretestLevel();
   const [selectedLevel, setSelectedLevel] = useState<CEFRLevel | 'all'>('all');
   const [quizType, setQuizType] = useState<QuizType>('definition');
   const [showSetup, setShowSetup] = useState(true);
@@ -31,7 +36,8 @@ export function Quiz() {
     : vocabulary.words.filter(w => w.cefrLevel === selectedLevel);
 
   const generateQuestions = useCallback(() => {
-    const shuffled = [...words].sort(() => Math.random() - 0.5).slice(0, 10);
+    const sessionSize = randomSessionSize(MIN_QUESTIONS, MAX_QUESTIONS, words.length);
+    const shuffled = pickDiverseSample(words, sessionSize);
     const allWords = vocabulary.words;
 
     const newQuestions: QuizQuestion[] = shuffled.map((word) => {
@@ -108,6 +114,15 @@ export function Quiz() {
     setShowExplanation(true);
 
     const currentQuestion = questions[currentQuestionIndex];
+
+    // Record the answer on the question itself — the results/review screen
+    // reads q.userAnswer to decide whether to show a green check or red X.
+    // Without this, every question showed as incorrect on the results
+    // screen regardless of what was actually selected.
+    setQuestions(prev => prev.map((q, i) =>
+      i === currentQuestionIndex ? { ...q, userAnswer: answer } : q
+    ));
+
     if (answer === currentQuestion.correctAnswer) {
       setScore(prev => prev + 1);
       vocabulary.updateWord(currentQuestion.word.id, {
@@ -131,13 +146,16 @@ export function Quiz() {
     } else {
       setQuizComplete(true);
 
-      // Save session
+      // Save session. `score` already reflects the just-answered final
+      // question (handleAnswer updates it before this button is clickable),
+      // so use it directly — adding another conditional increment here
+      // double-counted the last question when it was correct.
       const duration = Math.floor((Date.now() - sessionStartTime) / 1000);
       vocabulary.addSession({
         date: new Date().toISOString(),
         mode: 'quiz',
         wordsStudied: questions.length,
-        correctAnswers: score + (selectedAnswer === questions[currentQuestionIndex].correctAnswer ? 1 : 0),
+        correctAnswers: score,
         totalQuestions: questions.length,
         duration,
         cefrLevel: selectedLevel === 'all' ? 'A2' : selectedLevel,
@@ -167,20 +185,36 @@ export function Quiz() {
           <div>
             <label className="mb-2 block text-sm font-medium text-[#1A1A2E]">CEFR Level</label>
             <div className="grid grid-cols-4 gap-2">
-              {['all', 'A1', 'A2', 'B1', 'B2', 'C1', 'C2'].map((level) => (
-                <button
-                  key={level}
-                  onClick={() => setSelectedLevel(level as CEFRLevel | 'all')}
-                  className={`rounded-lg py-2.5 text-sm font-medium transition-colors ${
-                    selectedLevel === level
-                      ? 'bg-[#F5A623] text-white'
-                      : 'bg-white border border-[#E5E5DD] text-[#6B6B80] hover:bg-[#F5F5F0]'
-                  }`}
-                >
-                  {level === 'all' ? 'All' : level}
-                </button>
-              ))}
+              {(['all', 'A1', 'A2', 'B1', 'B2', 'C1', 'C2'] as const).map((level) => {
+                const locked = level !== 'all' && !isLevelUnlocked(vocabulary.words, level as CEFRLevel, pretestLevel);
+                const mastery = level !== 'all' ? getMasteryPct(vocabulary.words, level as CEFRLevel) : null;
+                return (
+                  <button
+                    key={level}
+                    onClick={() => !locked && setSelectedLevel(level)}
+                    disabled={locked}
+                    className={`relative rounded-lg py-2.5 text-sm font-medium transition-colors ${
+                      selectedLevel === level
+                        ? 'bg-[#F5A623] text-white'
+                        : locked
+                        ? 'bg-[#F5F5F0] text-[#9B9BAE]/50 cursor-not-allowed'
+                        : 'bg-white border border-[#E5E5DD] text-[#6B6B80] hover:bg-[#F5F5F0]'
+                    }`}
+                  >
+                    {locked && <Lock className="absolute top-1.5 right-1.5 h-2.5 w-2.5 text-[#9B9BAE]/50" />}
+                    <div>{level === 'all' ? 'All' : level}</div>
+                    {mastery !== null && !locked && mastery > 0 && (
+                      <div className={`text-[9px] mt-0.5 ${selectedLevel === level ? 'text-white/80' : 'text-[#9B9BAE]'}`}>
+                        {mastery}%
+                      </div>
+                    )}
+                  </button>
+                );
+              })}
             </div>
+            <p className="mt-2 text-xs text-[#9B9BAE]">
+              🔒 Levels unlock when previous level reaches {UNLOCK_PCT}% mastery
+            </p>
           </div>
 
           <div>
@@ -214,6 +248,10 @@ export function Quiz() {
               ))}
             </div>
           </div>
+
+          <p className="text-center text-xs text-[#9B9BAE]">
+            {words.length} words available · quizzes are 10–20 questions, mixed across levels
+          </p>
 
           <button
             onClick={generateQuestions}
