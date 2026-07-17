@@ -11,11 +11,36 @@ interface ImportExportModalProps {
   onClose: () => void;
 }
 
+// Max file size we'll attempt to read client-side. Anything bigger is far
+// more likely to be the wrong file than a real vocabulary list, and trying
+// to parse it can lock up the tab for a long time with no feedback.
+const MAX_IMPORT_FILE_BYTES = 10 * 1024 * 1024; // 10 MB
+
+function normalizeRows(parsed: any[]): Partial<VocabularyWord>[] {
+  return parsed.map((row: any) => ({
+    word: row.word || row.Word || '',
+    partOfSpeech: (row.partOfSpeech || row['Part of Speech'] || row.POS || 'noun') as PartOfSpeech,
+    laoTranslation: row.laoTranslation || row['Lao Translation'] || row.Lao || undefined,
+    thaiTranslation: row.thaiTranslation || row['Thai Translation'] || row.Thai || undefined,
+    definition: row.definition || row.Definition || '',
+    category: row.category || row.Category || row['Category/Theme'] || undefined,
+    exampleSentence: row.exampleSentence || row['Example Sentence'] || row.Example || '',
+    synonym: row.synonym || row.Synonym || row.Synonyms || undefined,
+    antonym: row.antonym || row.Antonym || row.Antonyms || undefined,
+    cefrLevel: (row.cefrLevel || row['CEFR Level'] || row.Level || 'A2') as CEFRLevel,
+  }));
+}
+
 export function ImportExportModal({ isOpen, onClose }: ImportExportModalProps) {
   const { vocabulary, addToast } = useApp();
   const [activeTab, setActiveTab] = useState<'import' | 'export'>('import');
   const [isDragging, setIsDragging] = useState(false);
+  const [isProcessing, setIsProcessing] = useState(false);
   const [previewData, setPreviewData] = useState<Partial<VocabularyWord>[]>([]);
+  // Full parsed dataset lives in component state (not a window global) —
+  // that avoids stale/overwritten data if the modal is reused or two
+  // imports happen in quick succession.
+  const [importData, setImportData] = useState<Partial<VocabularyWord>[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleDragOver = (e: React.DragEvent) => {
@@ -37,74 +62,118 @@ export function ImportExportModal({ isOpen, onClose }: ImportExportModalProps) {
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) processFile(file);
+    // Reset so selecting the same file again still fires onChange
+    e.target.value = '';
   };
 
-  const processFile = (file: File) => {
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      try {
-        const data = e.target?.result;
-        let parsed: Partial<VocabularyWord>[] = [];
-
-        if (file.name.endsWith('.csv')) {
-          const result = Papa.parse(data as string, { header: true, skipEmptyLines: true });
-          parsed = result.data as Partial<VocabularyWord>[];
-        } else if (file.name.endsWith('.xlsx') || file.name.endsWith('.xls')) {
-          const workbook = XLSX.read(data, { type: 'binary' });
-          const sheetName = workbook.SheetNames[0];
-          const worksheet = workbook.Sheets[sheetName];
-          parsed = XLSX.utils.sheet_to_json(worksheet) as Partial<VocabularyWord>[];
-        }
-
-        // Normalize field names
-        const normalized = parsed.map((row: any) => ({
-          word: row.word || row.Word || '',
-          partOfSpeech: (row.partOfSpeech || row['Part of Speech'] || row.POS || 'noun') as PartOfSpeech,
-          laoTranslation: row.laoTranslation || row['Lao Translation'] || row.Lao || undefined,
-          thaiTranslation: row.thaiTranslation || row['Thai Translation'] || row.Thai || undefined,
-          definition: row.definition || row.Definition || '',
-          category: row.category || row.Category || row['Category/Theme'] || undefined,
-          exampleSentence: row.exampleSentence || row['Example Sentence'] || row.Example || '',
-          synonym: row.synonym || row.Synonym || row.Synonyms || undefined,
-          antonym: row.antonym || row.Antonym || row.Antonyms || undefined,
-          cefrLevel: (row.cefrLevel || row['CEFR Level'] || row.Level || 'A2') as CEFRLevel,
-        }));
-
-        setPreviewData(normalized.slice(0, 5));
-        addToast(`Previewing ${normalized.length} words`, 'info');
-
-        // Store full data for import
-        (window as any).__importData = normalized;
-      } catch (error) {
-        addToast('Error parsing file', 'error');
-      }
-    };
-
-    if (file.name.endsWith('.csv')) {
-      reader.readAsText(file);
-    } else {
-      reader.readAsBinaryString(file);
+  const finishWithRows = (rows: any[]) => {
+    try {
+      const normalized = normalizeRows(rows);
+      setPreviewData(normalized.slice(0, 5));
+      setImportData(normalized);
+      addToast(`Previewing ${normalized.length} words`, 'info');
+    } catch {
+      addToast('The file was read but its contents look invalid. Please check the format and try again.', 'error');
+    } finally {
+      setIsProcessing(false);
     }
   };
 
+  const processFile = (file: File) => {
+    if (file.size === 0) {
+      addToast('That file is empty', 'error');
+      return;
+    }
+    if (file.size > MAX_IMPORT_FILE_BYTES) {
+      addToast('File is too large to import (max 10MB). Try splitting it into smaller files.', 'error');
+      return;
+    }
+
+    const isCsv = file.name.toLowerCase().endsWith('.csv');
+    const isExcel = file.name.toLowerCase().endsWith('.xlsx') || file.name.toLowerCase().endsWith('.xls');
+    if (!isCsv && !isExcel) {
+      addToast('Unsupported file type. Please upload a .csv, .xlsx, or .xls file.', 'error');
+      return;
+    }
+
+    setIsProcessing(true);
+
+    if (isCsv) {
+      // Parse the File directly with Papa's own file handling (worker: true
+      // runs parsing off the main thread) instead of reading the whole file
+      // into a string first and parsing synchronously — that combination is
+      // what could freeze/appear to "pause" the app on larger CSV files.
+      Papa.parse(file, {
+        header: true,
+        skipEmptyLines: true,
+        worker: true,
+        complete: (result) => {
+          if (result.errors && result.errors.length > 0) {
+            // Non-fatal row errors (e.g. inconsistent column count) — warn
+            // but still import whatever parsed successfully.
+            addToast(`Parsed with ${result.errors.length} row warning(s); check the preview before importing`, 'info');
+          }
+          finishWithRows(result.data as any[]);
+        },
+        error: (error) => {
+          setIsProcessing(false);
+          addToast(`Error reading CSV file: ${error.message || 'unknown error'}`, 'error');
+        },
+      });
+      return;
+    }
+
+    // Excel files: FileReader is still needed to get bytes into memory for
+    // the xlsx library, so make sure both success AND failure are handled.
+    const reader = new FileReader();
+    reader.onerror = () => {
+      setIsProcessing(false);
+      addToast('Could not read that file — it may be corrupted or in use by another program', 'error');
+    };
+    reader.onabort = () => {
+      setIsProcessing(false);
+      addToast('File reading was cancelled', 'error');
+    };
+    reader.onload = (e) => {
+      try {
+        const data = e.target?.result;
+        const workbook = XLSX.read(data, { type: 'binary' });
+        const sheetName = workbook.SheetNames[0];
+        if (!sheetName) throw new Error('No sheets found in workbook');
+        const worksheet = workbook.Sheets[sheetName];
+        const parsed = XLSX.utils.sheet_to_json(worksheet);
+        finishWithRows(parsed);
+      } catch (error) {
+        setIsProcessing(false);
+        addToast(`Error parsing Excel file: ${(error as Error).message || 'unknown error'}`, 'error');
+      }
+    };
+    reader.readAsBinaryString(file);
+  };
+
   const handleImport = () => {
-    const data = (window as any).__importData as Partial<VocabularyWord>[];
-    if (!data || data.length === 0) {
+    if (!importData || importData.length === 0) {
       addToast('No data to import', 'error');
       return;
     }
 
-    const validWords = data.filter(w => w.word && w.definition && w.exampleSentence);
+    const validWords = importData.filter(w => w.word && w.definition && w.exampleSentence);
     if (validWords.length === 0) {
-      addToast('No valid words found in file', 'error');
+      addToast('No valid words found in file — each row needs at least a word, definition, and example sentence', 'error');
       return;
     }
 
-    const { added, updated } = vocabulary.mergeSharedWords(validWords as any);
-    addToast(`Imported: ${added} new, ${updated} updated (words already in your list won't be duplicated)`, 'success');
-    setPreviewData([]);
-    (window as any).__importData = null;
-    onClose();
+    // Merging can theoretically throw on unexpected data shapes; never let
+    // that take down the whole app — surface it as a toast instead.
+    try {
+      const { added, updated } = vocabulary.mergeSharedWords(validWords as any);
+      addToast(`Imported: ${added} new, ${updated} updated (words already in your list won't be duplicated)`, 'success');
+      setPreviewData([]);
+      setImportData([]);
+      onClose();
+    } catch (error) {
+      addToast(`Import failed: ${(error as Error).message || 'unexpected error'}`, 'error');
+    }
   };
 
   const handleExportCSV = () => {
@@ -212,24 +281,37 @@ export function ImportExportModal({ isOpen, onClose }: ImportExportModalProps) {
                   {/* Drop Zone */}
                   {!previewData.length && (
                     <div
-                      onDragOver={handleDragOver}
-                      onDragLeave={handleDragLeave}
-                      onDrop={handleDrop}
-                      onClick={() => fileInputRef.current?.click()}
-                      className={`flex cursor-pointer flex-col items-center justify-center rounded-xl border-2 border-dashed p-8 transition-colors ${
-                        isDragging
-                          ? 'border-[#F5A623] bg-[#FFF3DD]'
-                          : 'border-[#E5E5DD] bg-[#F5F5F0] hover:border-[#D5D5CD]'
+                      onDragOver={isProcessing ? undefined : handleDragOver}
+                      onDragLeave={isProcessing ? undefined : handleDragLeave}
+                      onDrop={isProcessing ? undefined : handleDrop}
+                      onClick={() => !isProcessing && fileInputRef.current?.click()}
+                      aria-busy={isProcessing}
+                      className={`flex flex-col items-center justify-center rounded-xl border-2 border-dashed p-8 transition-colors ${
+                        isProcessing
+                          ? 'cursor-wait border-[#E5E5DD] bg-[#F5F5F0] opacity-70'
+                          : isDragging
+                          ? 'cursor-pointer border-[#F5A623] bg-[#FFF3DD]'
+                          : 'cursor-pointer border-[#E5E5DD] bg-[#F5F5F0] hover:border-[#D5D5CD]'
                       }`}
                     >
-                      <Upload className="mb-3 h-8 w-8 text-[#9B9BAE]" strokeWidth={1.5} />
-                      <p className="text-sm font-medium text-[#1A1A2E]">Drop your file here or click to browse</p>
-                      <p className="mt-1 text-xs text-[#9B9BAE]">Supports CSV, XLSX, XLS</p>
+                      {isProcessing ? (
+                        <>
+                          <div className="mb-3 h-8 w-8 animate-spin rounded-full border-2 border-[#E5E5DD] border-t-[#F5A623]" />
+                          <p className="text-sm font-medium text-[#1A1A2E]">Reading file…</p>
+                        </>
+                      ) : (
+                        <>
+                          <Upload className="mb-3 h-8 w-8 text-[#9B9BAE]" strokeWidth={1.5} />
+                          <p className="text-sm font-medium text-[#1A1A2E]">Drop your file here or click to browse</p>
+                          <p className="mt-1 text-xs text-[#9B9BAE]">Supports CSV, XLSX, XLS (max 10MB)</p>
+                        </>
+                      )}
                       <input
                         ref={fileInputRef}
                         type="file"
                         accept=".csv,.xlsx,.xls"
                         onChange={handleFileSelect}
+                        disabled={isProcessing}
                         className="hidden"
                       />
                     </div>
@@ -263,7 +345,7 @@ export function ImportExportModal({ isOpen, onClose }: ImportExportModalProps) {
                       </div>
                       <div className="mt-4 flex gap-3">
                         <button
-                          onClick={() => { setPreviewData([]); (window as any).__importData = null; }}
+                          onClick={() => { setPreviewData([]); setImportData([]); }}
                           className="rounded-[10px] border border-[#E5E5DD] bg-white px-4 py-2.5 text-sm font-medium text-[#1A1A2E] hover:bg-[#F5F5F0]"
                         >
                           Cancel
