@@ -26,6 +26,7 @@ const Dashboard      = lazy(() => import('@/pages/Dashboard').then(m => ({ defau
 const WordList       = lazy(() => import('@/pages/WordList').then(m => ({ default: m.WordList })));
 const Favorites      = lazy(() => import('@/pages/Favorites').then(m => ({ default: m.Favorites })));
 const LevelJourney   = lazy(() => import('@/pages/LevelJourney').then(m => ({ default: m.LevelJourney })));
+const Categories     = lazy(() => import('@/pages/Categories').then(m => ({ default: m.Categories })));
 const StudyLayout    = lazy(() => import('@/pages/StudyLayout').then(m => ({ default: m.StudyLayout })));
 const Flashcards     = lazy(() => import('@/pages/Flashcards').then(m => ({ default: m.Flashcards })));
 const Quiz           = lazy(() => import('@/pages/Quiz').then(m => ({ default: m.Quiz })));
@@ -171,6 +172,7 @@ function AppInner() {
                 <Route path="/pretest"       element={<PreTest />} />
                 <Route path="/study"         element={<StudyLayout />}>
                   <Route path="level"        element={<LevelJourney />} />
+                  <Route path="categories"   element={<Categories />} />
                   <Route path="flashcards"   element={<Flashcards />} />
                   <Route path="quiz"         element={<Quiz />} />
                   <Route path="matching"     element={<Matching />} />

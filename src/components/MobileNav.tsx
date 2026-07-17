@@ -3,7 +3,7 @@ import { NavLink, useLocation } from 'react-router-dom';
 import {
   LayoutDashboard, BookOpen, TrendingUp, Mic, Menu, X,
   Star, Settings, User, Shield, HelpCircle, Layers,
-  Puzzle, Keyboard, Flame, LogOut, ClipboardList, Zap,
+  Puzzle, Keyboard, Flame, LogOut, ClipboardList, Zap, Tags,
 } from 'lucide-react';
 import { useAuth } from '@/hooks/useAuth';
 import { useApp } from '@/App';
@@ -178,6 +178,8 @@ export function MobileNav() {
                 </DrawerSection>
 
                 <DrawerSection label="Study">
+                  <DrawerLink to="/study/level"       icon={TrendingUp} label="Level Journey" onNav={() => setDrawerOpen(false)} pathname={pathname} />
+                  <DrawerLink to="/study/categories"  icon={Tags}       label="Categories" onNav={() => setDrawerOpen(false)} pathname={pathname} />
                   <DrawerLink to="/study/flashcards" icon={Layers}     label="Flashcards" onNav={() => setDrawerOpen(false)} pathname={pathname} />
                   <DrawerLink to="/study/quiz"       icon={HelpCircle} label="Quiz"       onNav={() => setDrawerOpen(false)} pathname={pathname} />
                   <DrawerLink to="/study/matching"   icon={Puzzle}     label="Matching"   onNav={() => setDrawerOpen(false)} pathname={pathname} />
