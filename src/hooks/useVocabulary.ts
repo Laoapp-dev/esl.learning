@@ -272,7 +272,7 @@ function loadFromStorage<T>(key: string, fallback: T): T {
 
 /**
  * Defensive sanitizer for any array of "word-like" objects coming from
- * localStorage, Firestore, Google Sheets, GitHub, or CSV import.
+ * localStorage, Google Sheets, GitHub, or CSV import.
  *
  * ROOT CAUSE OF THE "Cannot read properties of null (reading 'word')" CRASH:
  * every one of those sources can — through an old app version, a corrupted
@@ -285,47 +285,12 @@ function loadFromStorage<T>(key: string, fallback: T): T {
  * makes every downstream `.word` access safe without having to defensively
  * guard dozens of call sites individually.
  */
-// ── Second layer of the same fix, one level deeper ──────────────────────────
-// sanitizeWords() above only ever checked that `.word` was a valid non-empty
-// string before letting an entry through. Every OTHER field typed as
-// required in VocabularyWord — most importantly `definition` and
-// `exampleSentence` — was assumed to also be a valid string just because it
-// passed that one check. That assumption breaks for:
-//  • words saved by an older app version, from before a field existed
-//  • rows from a CSV/Sheet/Firestore source with a blank/missing column
-//  • any hand-edited or partially-corrupted localStorage entry
-// Those all pass sanitizeWords fine (they DO have a `.word`), then crash the
-// instant any code does `w.exampleSentence.toLowerCase()` or similar —
-// exactly what getFilteredWords() does on every keystroke in the WordList
-// search box. Coercing every required string field to a safe default here,
-// once, at the same choke point every word already passes through, closes
-// the whole class of bugs instead of chasing individual `.toLowerCase()`
-// call sites one crash report at a time.
-function coerceWord(w: any): VocabularyWord {
-  return {
-    ...w,
-    word: String(w.word),
-    definition: typeof w.definition === 'string' ? w.definition : '',
-    exampleSentence: typeof w.exampleSentence === 'string' ? w.exampleSentence : '',
-    partOfSpeech: w.partOfSpeech || 'noun',
-    cefrLevel: w.cefrLevel || 'B1',
-    difficulty: w.difficulty || 'medium',
-    studyCount: typeof w.studyCount === 'number' ? w.studyCount : 0,
-    correctCount: typeof w.correctCount === 'number' ? w.correctCount : 0,
-    isStarred: !!w.isStarred,
-    isLearned: !!w.isLearned,
-    dateAdded: typeof w.dateAdded === 'string' ? w.dateAdded : new Date().toISOString(),
-  };
-}
-
 function sanitizeWords(arr: unknown): VocabularyWord[] {
   if (!Array.isArray(arr)) return [];
-  return arr
-    .filter(
-      (w): w is Record<string, unknown> =>
-        !!w && typeof w === 'object' && typeof (w as any).word === 'string' && (w as any).word.trim() !== ''
-    )
-    .map(coerceWord);
+  return arr.filter(
+    (w): w is VocabularyWord =>
+      !!w && typeof w === 'object' && typeof (w as any).word === 'string' && (w as any).word.trim() !== ''
+  );
 }
 
 function saveToStorage<T>(key: string, value: T): boolean {
@@ -366,8 +331,13 @@ function upsertWords(
 
   const keyOf = (w: string) => w.toLowerCase().trim();
   const indexByKey = new Map(safeBase.map((w, i) => [keyOf(w.word), i]));
-  const next = [...safeBase];
-  const toAppend: VocabularyWord[] = [];
+  // Single unified working array — every index ever stored in indexByKey
+  // points into THIS array, always. (Previously new words were staged in a
+  // separate `toAppend` array while indexByKey recorded positions as if it
+  // were already merged with `next`; a word appearing a 3rd+ time in the
+  // same import batch would then look up an index past the end of `next`,
+  // get `undefined` back, and crash on `existing.source`.)
+  const merged: VocabularyWord[] = [...safeBase];
   let added = 0, updated = 0;
 
   for (const raw of safeIncoming) {
@@ -377,8 +347,8 @@ function upsertWords(
     const idx = indexByKey.get(key);
 
     if (idx !== undefined) {
-      const existing = next[idx];
-      next[idx] = {
+      const existing = merged[idx];
+      merged[idx] = {
         ...existing,
         word: w.word,
         partOfSpeech: w.partOfSpeech || existing.partOfSpeech,
@@ -408,7 +378,7 @@ function upsertWords(
         exampleSentence: w.exampleSentence || '',
         cefrLevel: w.cefrLevel || 'B1',
         difficulty: w.difficulty || 'medium',
-        id: w.id || `gs_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+        id: w.id || uuidv4(),
         dateAdded: w.dateAdded || new Date().toISOString(),
         studyCount: 0, correctCount: 0, isStarred: false, isLearned: false,
         source: w.source ?? defaultSource,
@@ -418,13 +388,13 @@ function upsertWords(
         ...(w.laoTranslation && { laoTranslation: w.laoTranslation }),
         ...(w.thaiTranslation && { thaiTranslation: w.thaiTranslation }),
       };
-      indexByKey.set(key, next.length + toAppend.length);
-      toAppend.push(stamped);
+      indexByKey.set(key, merged.length);
+      merged.push(stamped);
       added++;
     }
   }
 
-  return { result: added + updated > 0 ? [...next, ...toAppend] : safeBase, added, updated };
+  return { result: added + updated > 0 ? merged : safeBase, added, updated };
 }
 
 export function useVocabulary(dataKeyPrefix?: string) {
@@ -489,10 +459,8 @@ export function useVocabulary(dataKeyPrefix?: string) {
   // in another tab picks up the new words immediately — no reload needed,
   // and no risk of a mid-session page reload losing study progress.
   //
-  // Firestore's real-time listener (useFirestoreLiveVocabulary) and the
-  // GitHub shared-curriculum pull (App.tsx) already cover the cross-DEVICE
-  // case; this covers the cross-TAB case on one device, including for
-  // setups that don't use either of those.
+  // The GitHub shared-curriculum pull (App.tsx) already covers the
+  // cross-DEVICE case; this covers the cross-TAB case on one device.
   const [externalSyncNotice, setExternalSyncNotice] = useState<{ added: number; updated: number } | null>(null);
   const clearExternalSyncNotice = useCallback(() => setExternalSyncNotice(null), []);
 
@@ -658,8 +626,8 @@ export function useVocabulary(dataKeyPrefix?: string) {
       const q = searchQuery.toLowerCase();
       filtered = filtered.filter(w =>
         w.word.toLowerCase().includes(q) ||
-        (w.definition && w.definition.toLowerCase().includes(q)) ||
-        (w.exampleSentence && w.exampleSentence.toLowerCase().includes(q)) ||
+        w.definition.toLowerCase().includes(q) ||
+        w.exampleSentence.toLowerCase().includes(q) ||
         (w.synonym && w.synonym.toLowerCase().includes(q)) ||
         (w.laoTranslation && w.laoTranslation.toLowerCase().includes(q)) ||
         (w.thaiTranslation && w.thaiTranslation.toLowerCase().includes(q))
@@ -767,10 +735,10 @@ export function useVocabulary(dataKeyPrefix?: string) {
   }, [settings.googleSheetUrl, words]);
 
 
-  // Merge words from Google Sheet/GitHub/Firestore WITHOUT duplicating.
+  // Merge words from Google Sheet/GitHub WITHOUT duplicating.
   // Thin wrapper around upsertWords() — see that function for the actual logic.
   // This is the ONLY function that should be used to bring in words from an
-  // external source (sheet/Firestore/GitHub/Excel). Never use importWords for
+  // external source (sheet/GitHub/CSV/Excel). Never use importWords for
   // that — importWords always appends and will duplicate on every sync.
   // Scans the CURRENT word list for duplicates (by normalized word text) and
   // reports them without changing anything — used to show the admin exactly
