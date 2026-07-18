@@ -285,12 +285,47 @@ function loadFromStorage<T>(key: string, fallback: T): T {
  * makes every downstream `.word` access safe without having to defensively
  * guard dozens of call sites individually.
  */
+// ── Second layer of the same fix, one level deeper ──────────────────────────
+// sanitizeWords() above only ever checked that `.word` was a valid non-empty
+// string before letting an entry through. Every OTHER field typed as
+// required in VocabularyWord — most importantly `definition` and
+// `exampleSentence` — was assumed to also be a valid string just because it
+// passed that one check. That assumption breaks for:
+//  • words saved by an older app version, from before a field existed
+//  • rows from a CSV/Sheet/Firestore source with a blank/missing column
+//  • any hand-edited or partially-corrupted localStorage entry
+// Those all pass sanitizeWords fine (they DO have a `.word`), then crash the
+// instant any code does `w.exampleSentence.toLowerCase()` or similar —
+// exactly what getFilteredWords() does on every keystroke in the WordList
+// search box. Coercing every required string field to a safe default here,
+// once, at the same choke point every word already passes through, closes
+// the whole class of bugs instead of chasing individual `.toLowerCase()`
+// call sites one crash report at a time.
+function coerceWord(w: any): VocabularyWord {
+  return {
+    ...w,
+    word: String(w.word),
+    definition: typeof w.definition === 'string' ? w.definition : '',
+    exampleSentence: typeof w.exampleSentence === 'string' ? w.exampleSentence : '',
+    partOfSpeech: w.partOfSpeech || 'noun',
+    cefrLevel: w.cefrLevel || 'B1',
+    difficulty: w.difficulty || 'medium',
+    studyCount: typeof w.studyCount === 'number' ? w.studyCount : 0,
+    correctCount: typeof w.correctCount === 'number' ? w.correctCount : 0,
+    isStarred: !!w.isStarred,
+    isLearned: !!w.isLearned,
+    dateAdded: typeof w.dateAdded === 'string' ? w.dateAdded : new Date().toISOString(),
+  };
+}
+
 function sanitizeWords(arr: unknown): VocabularyWord[] {
   if (!Array.isArray(arr)) return [];
-  return arr.filter(
-    (w): w is VocabularyWord =>
-      !!w && typeof w === 'object' && typeof (w as any).word === 'string' && (w as any).word.trim() !== ''
-  );
+  return arr
+    .filter(
+      (w): w is Record<string, unknown> =>
+        !!w && typeof w === 'object' && typeof (w as any).word === 'string' && (w as any).word.trim() !== ''
+    )
+    .map(coerceWord);
 }
 
 function saveToStorage<T>(key: string, value: T): boolean {
@@ -623,8 +658,8 @@ export function useVocabulary(dataKeyPrefix?: string) {
       const q = searchQuery.toLowerCase();
       filtered = filtered.filter(w =>
         w.word.toLowerCase().includes(q) ||
-        w.definition.toLowerCase().includes(q) ||
-        w.exampleSentence.toLowerCase().includes(q) ||
+        (w.definition && w.definition.toLowerCase().includes(q)) ||
+        (w.exampleSentence && w.exampleSentence.toLowerCase().includes(q)) ||
         (w.synonym && w.synonym.toLowerCase().includes(q)) ||
         (w.laoTranslation && w.laoTranslation.toLowerCase().includes(q)) ||
         (w.thaiTranslation && w.thaiTranslation.toLowerCase().includes(q))
