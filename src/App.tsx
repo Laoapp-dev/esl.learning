@@ -71,6 +71,26 @@ function AppInner() {
   // Track previous auth state to fire effects only on login transition
   const prevAuthRef = useRef(false);
 
+  // Surface warnings/notices bubbled up from useVocabulary as toasts —
+  // the hook itself has no UI, so App.tsx is where these become visible.
+  useEffect(() => {
+    if (vocabulary.storageWarning) {
+      addToast(vocabulary.storageWarning, 'error');
+      vocabulary.clearStorageWarning();
+    }
+  }, [vocabulary.storageWarning]); // eslint-disable-line
+
+  useEffect(() => {
+    if (vocabulary.externalSyncNotice) {
+      const { added, updated } = vocabulary.externalSyncNotice;
+      const parts: string[] = [];
+      if (added > 0) parts.push(`${added} new word${added === 1 ? '' : 's'}`);
+      if (updated > 0) parts.push(`${updated} updated`);
+      if (parts.length > 0) addToast(`✨ Vocabulary synced from another tab — ${parts.join(', ')}`, 'success');
+      vocabulary.clearExternalSyncNotice();
+    }
+  }, [vocabulary.externalSyncNotice]); // eslint-disable-line
+
   // On login: merge shared Google Sheet words + pull vocab from GitHub
   useEffect(() => {
     if (!isAuthenticated || !currentUser) return;
@@ -127,6 +147,31 @@ function AppInner() {
   // Sheet auto-sync above running at the same time; both funnel into the same
   // dedup-safe mergeSharedWords, so nothing can double up between the two.
   useFirestoreLiveVocabulary(isAuthenticated, (words) => vocabulary.mergeSharedWords(words));
+
+  // ── Shared curriculum sync via GitHub (EVERY user, works without a rebuild) ──
+  // This is what makes "admin resets + imports CSV/Sheet + pushes" actually
+  // reach other devices: a fixed file in the admin's configured GitHub repo
+  // that every learner's app pulls on login and periodically thereafter.
+  // Uses replaceSharedWords (reconciling replace), not mergeSharedWords (add
+  // -only) — so when the admin pushes a fresh curriculum snapshot, words
+  // that are no longer in it actually disappear from learners' devices
+  // instead of piling up next to the new ones forever. A learner's own
+  // manually-added words (source:'manual') are never touched by this.
+  useEffect(() => {
+    if (!isAuthenticated) return;
+
+    const run = () => {
+      githubSync.pullSharedVocabulary().then(r => {
+        if (r.success && r.words && r.words.length > 0) {
+          vocabulary.replaceSharedWords(r.words);
+        }
+      }).catch(() => {/* silent — GitHub not configured, or nothing pushed yet */});
+    };
+
+    run(); // once on login
+    const id = setInterval(run, 15 * 60_000); // and every 15 min while the tab stays open
+    return () => clearInterval(id);
+  }, [isAuthenticated]); // eslint-disable-line
 
   // Legacy per-browser auto-sync (Admin Panel "auto sync" timer + interval
   // config). Kept for backward compatibility / manual testing by admin, but

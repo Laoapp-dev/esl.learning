@@ -84,6 +84,9 @@ export function AdminPanel() {
     appDuplicates: { word: string; count: number; ids: string[] }[];
   } | null>(null);
   const [showScriptHelp, setShowScriptHelp] = useState(false);
+  const [pushingShared, setPushingShared] = useState(false);
+  const [resetConfirm, setResetConfirm] = useState<'shared' | 'all' | null>(null);
+  const [resetting, setResetting] = useState(false);
 
   const refreshUsers = useCallback(() => setUsers(getAllUsers()), [getAllUsers]);
 
@@ -208,17 +211,100 @@ export function AdminPanel() {
     addToast('Users exported','success');
   };
   const handleImportVocab = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]; if(!file) return;
-    Papa.parse(file, {
-      header:true,
-      complete:(r) => {
-        const rows = (r.data as Record<string,string>[]).filter(x=>x.word);
-        const { added, updated } = vocabulary.mergeSharedWords(rows as any);
-        addToast(`Imported: ${added} new, ${updated} updated (re-uploading the same file is now safe)`,'success');
-      },
-      error:() => addToast('Failed to parse CSV','error'),
-    });
-    e.target.value='';
+    const file = e.target.files?.[0];
+    e.target.value = ''; // reset so re-selecting the same file still fires onChange
+    if (!file) return;
+    if (file.size === 0) { addToast('That file is empty', 'error'); return; }
+    if (file.size > 25 * 1024 * 1024) { addToast('File is too large to import (max 25MB, roughly 10,000 rows)', 'error'); return; }
+
+    try {
+      Papa.parse(file, {
+        header: true,
+        skipEmptyLines: true,
+        // Deliberately no `worker: true` — PapaParse's worker mode needs to
+        // locate its own script via document.currentScript, which breaks
+        // once bundled by Vite for production and throws instead of
+        // parsing. That was previously crashing CSV import entirely.
+        complete: (r) => {
+          try {
+            let rows = (r.data as Record<string, string>[])
+              .filter(x => x && typeof x === 'object' && x.word && x.word.trim());
+            if (rows.length === 0) {
+              addToast('No valid rows found — check that your CSV has a "word" column', 'error');
+              return;
+            }
+            let truncated = false;
+            if (rows.length > 10_000) {
+              rows = rows.slice(0, 10_000);
+              truncated = true;
+            }
+            const { added, updated } = vocabulary.mergeSharedWords(rows as any, 'shared');
+            addToast(
+              (truncated ? `File had more than 10,000 rows — imported the first 10,000. ` : '') +
+              `Imported: ${added} new, ${updated} updated (re-uploading the same file is safe). Click "Push to All Learners" to send this to every device.`,
+              'success'
+            );
+          } catch (err) {
+            addToast(`Import failed: ${(err as Error).message || 'unexpected error'}`, 'error');
+          }
+        },
+        error: () => addToast('Failed to parse CSV — check the file is valid CSV format', 'error'),
+      });
+    } catch (err) {
+      // Defense-in-depth: a synchronous throw here (e.g. a parsing library
+      // failing to initialize) used to be an uncaught error inside this
+      // file-input change handler, which crashed the whole app instead of
+      // failing just this one import.
+      addToast(`Couldn't read that file: ${(err as Error).message || 'unknown error'}`, 'error');
+    }
+  };
+
+  // ── Push curriculum to all learners' devices ─────────────────────────────────
+  // Sends every word currently tagged source:'shared' (i.e. anything that
+  // came from a CSV import or Google Sheet sync here in Admin Panel — never
+  // a learner's own manual additions) to the shared GitHub file. Every
+  // learner's app pulls this on login/periodically (see App.tsx) and
+  // reconciles their local list to match it — words removed from this set
+  // actually disappear from their devices too, not just pile up.
+  const handlePushShared = async () => {
+    if (!getGithubConfig()) {
+      addToast('Set up GitHub Sync first (Admin Panel → GitHub Sync tab) — that\'s what carries vocabulary to other devices', 'error');
+      return;
+    }
+    const sharedWords = vocabulary.words.filter(w => w.source === 'shared');
+    if (sharedWords.length === 0) {
+      addToast('No curriculum words to push yet — import a CSV or sync a Google Sheet first', 'error');
+      return;
+    }
+    setPushingShared(true);
+    const r = await githubSync.pushSharedVocabulary(sharedWords, currentUser?.username);
+    addToast(r.success ? `🚀 ${r.message} — reaches every device within 15 minutes (or instantly on their next login)` : `❌ ${r.message}`, r.success ? 'success' : 'error');
+    setPushingShared(false);
+  };
+
+  // ── Reset vocabulary (Danger Zone) ───────────────────────────────────────────
+  // scope 'shared': clears curriculum words on THIS device and on GitHub, so
+  //   the reset actually sticks instead of being immediately re-pulled back
+  //   in on the next sync. Learner-added ('manual') words are untouched.
+  // scope 'all': also clears manually-added words on this device. GitHub
+  //   per-user data is untouched by this — it only affects this browser and
+  //   the shared curriculum file.
+  const handleResetVocabulary = async (scope: 'shared' | 'all') => {
+    if (resetConfirm !== scope) {
+      setResetConfirm(scope);
+      setTimeout(() => setResetConfirm(prev => prev === scope ? null : prev), 5000);
+      return;
+    }
+    setResetConfirm(null);
+    setResetting(true);
+    const { removed } = vocabulary.clearVocabulary(scope);
+    let ghMsg = '';
+    if (getGithubConfig()) {
+      const r = await githubSync.clearSharedVocabulary();
+      ghMsg = r.success ? ' Shared curriculum on GitHub cleared too.' : ` (Couldn't clear GitHub copy: ${r.message})`;
+    }
+    setResetting(false);
+    addToast(`🗑️ Removed ${removed} word${removed === 1 ? '' : 's'}.${ghMsg} Import a new CSV or sync a Google Sheet, then push to learners.`, 'success');
   };
   const handleDownloadTemplate = () => {
     const header = 'word,definition,partOfSpeech,cefrLevel,exampleSentence,synonym,antonym,category,difficulty,laoTranslation,thaiTranslation\n';
@@ -364,7 +450,7 @@ function doGet() {
             <SuccessBox>
               <CheckCircle2 className="h-4 w-4 shrink-0 mt-0.5"/>
               <div className="flex-1">
-                <span className="font-semibold">Last synced:</span> {new Date(gs.config.lastSyncAt).toLocaleString()} — {gs.config.lastSyncCount} words loaded for all users
+                <span className="font-semibold">Last synced:</span> {new Date(gs.config.lastSyncAt).toLocaleString()} — {gs.config.lastSyncCount} words loaded on this device
               </div>
               <button onClick={handleSyncGS} disabled={gs.syncing||(!gs.config.csvUrl&&!gs.config.scriptUrl)} className="flex items-center gap-1 text-xs font-semibold text-green-700 hover:text-green-900 shrink-0">
                 {gs.syncing?<Spinner/>:<RefreshCw className="h-3.5 w-3.5"/>} Sync Now
@@ -521,8 +607,9 @@ function doGet() {
               <h2 className="font-semibold text-foreground">Sync Words to App</h2>
             </div>
             <p className="text-sm text-muted-foreground">
-              Pull the latest words from your sheet and make them available to <strong>all users</strong> instantly — including on mobile.
-              Existing words are updated; new rows are added; nothing is deleted.
+              Pulls the latest words from your sheet into <strong>this device</strong>. Existing words
+              are updated; new rows are added; nothing is deleted. To reach other learners' devices,
+              use "Push to All Learners" below afterward.
             </p>
             <button onClick={handleSyncGS} disabled={gs.syncing||(!gs.config.csvUrl&&!gs.config.scriptUrl)}
               className="w-full flex items-center justify-center gap-2 py-3 rounded-xl bg-[#F5A623] text-white text-sm font-bold hover:bg-[#E09400] transition-colors disabled:opacity-40">
@@ -534,9 +621,20 @@ function doGet() {
             {gs.config.autoIntervalMin > 0 && (
               <div className="flex items-center gap-2 text-xs text-green-700 bg-green-50 dark:bg-green-900/20 rounded-lg px-3 py-2">
                 <Clock className="h-3.5 w-3.5 shrink-0"/>
-                Auto-syncing every {gs.config.autoIntervalMin} minutes
+                Auto-syncing every {gs.config.autoIntervalMin} minutes (this device only)
               </div>
             )}
+
+            <div className="border-t border-border pt-3">
+              <button onClick={handlePushShared} disabled={pushingShared}
+                className="w-full flex items-center justify-center gap-2 py-3 rounded-xl bg-[#1A1A2E] text-white text-sm font-semibold hover:bg-[#252545] transition-colors disabled:opacity-50">
+                {pushingShared ? <Spinner/> : <Upload className="h-4 w-4"/>} Push to All Learners
+              </button>
+              <p className="mt-1.5 text-[11px] text-muted-foreground text-center">
+                Sends the synced words to every device via GitHub Sync — reaches them within 15
+                minutes, or instantly on next login.
+              </p>
+            </div>
           </div>
 
           {/* Duplicate check & cleanup */}
@@ -714,17 +812,79 @@ function doGet() {
               <p className="font-medium mb-1">Required CSV columns:</p>
               <p className="font-mono text-[10px]">word, definition, partOfSpeech, cefrLevel, exampleSentence, synonym, antonym, category, difficulty, laoTranslation, thaiTranslation</p>
             </div>
+
+            {/* Push imported/synced curriculum to every learner's device */}
+            <div className="border-t border-border pt-4 space-y-2">
+              <p className="text-xs text-muted-foreground">
+                {vocabulary.words.filter(w => w.source === 'shared').length} curriculum word(s) ready to push
+                {' · '}{vocabulary.words.filter(w => w.source !== 'shared').length} other word(s) on this device
+              </p>
+              <button onClick={handlePushShared} disabled={pushingShared}
+                className="w-full flex items-center justify-center gap-2 py-3 rounded-xl bg-[#F5A623] text-white text-sm font-semibold hover:bg-[#E09400] transition-colors disabled:opacity-50">
+                {pushingShared ? <Spinner/> : <Upload className="h-4 w-4"/>} Push to All Learners
+              </button>
+              <p className="text-[11px] text-muted-foreground">
+                Sends words imported here (CSV) or synced from the Google Sheet tab to every
+                learner's device via GitHub Sync — reaches them within 15 minutes, or instantly
+                on their next login. Words a learner added themselves are never affected.
+              </p>
+            </div>
           </div>
+
           <div className="bg-card rounded-xl border border-border p-5 space-y-4">
             <h2 className="font-semibold text-foreground">User Data</h2>
             <button onClick={handleExportUsers} className="w-full flex items-center justify-center gap-2 py-3 rounded-xl bg-[#1A1A2E] text-white text-sm font-semibold hover:bg-[#252545] transition-colors">
               <FileDown className="h-4 w-4"/> Export All Users CSV
             </button>
           </div>
+
           <WarnBox>
             <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5"/>
             <div><strong>Admin only.</strong> Import merges words — nothing is deleted. Export includes all words in the system.</div>
           </WarnBox>
+
+          {/* ── Danger Zone ─────────────────────────────────────────────────────── */}
+          <div className="bg-card rounded-xl border-2 border-red-200 dark:border-red-900 p-5 space-y-4">
+            <h2 className="font-semibold text-red-700 dark:text-red-400 flex items-center gap-2">
+              <AlertTriangle className="h-4 w-4"/> Danger Zone
+            </h2>
+
+            <div className="space-y-2">
+              <p className="text-sm text-foreground font-medium">Reset curriculum, keep learner notes</p>
+              <p className="text-xs text-muted-foreground">
+                Clears every word tagged as curriculum (from CSV import or Google Sheet sync) on this
+                device and on GitHub, so a stale sync can't bring it back. Anything a learner typed in
+                themselves is left alone. Use this before importing a fresh CSV or connecting a new sheet.
+              </p>
+              <button onClick={() => handleResetVocabulary('shared')} disabled={resetting}
+                className={`w-full flex items-center justify-center gap-2 py-2.5 rounded-xl text-sm font-semibold transition-colors disabled:opacity-50 ${
+                  resetConfirm === 'shared'
+                    ? 'bg-red-600 text-white hover:bg-red-700'
+                    : 'bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-400 border border-red-200 dark:border-red-800 hover:bg-red-100'
+                }`}>
+                {resetting ? <Spinner/> : <Trash2 className="h-4 w-4"/>}
+                {resetConfirm === 'shared' ? 'Click again to confirm reset' : 'Reset Curriculum Vocabulary'}
+              </button>
+            </div>
+
+            <div className="border-t border-red-100 dark:border-red-900 pt-4 space-y-2">
+              <p className="text-sm text-foreground font-medium">Reset everything on this device</p>
+              <p className="text-xs text-muted-foreground">
+                Clears ALL words on this device, including anything added manually here. Only affects
+                this browser — does not delete other learners' personal progress stored on their own
+                devices or in their per-user GitHub backup.
+              </p>
+              <button onClick={() => handleResetVocabulary('all')} disabled={resetting}
+                className={`w-full flex items-center justify-center gap-2 py-2.5 rounded-xl text-sm font-semibold transition-colors disabled:opacity-50 ${
+                  resetConfirm === 'all'
+                    ? 'bg-red-600 text-white hover:bg-red-700'
+                    : 'bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-400 border border-red-200 dark:border-red-800 hover:bg-red-100'
+                }`}>
+                {resetting ? <Spinner/> : <Trash2 className="h-4 w-4"/>}
+                {resetConfirm === 'all' ? 'Click again to confirm reset' : 'Reset All Words on This Device'}
+              </button>
+            </div>
+          </div>
         </motion.div>
       )}
 

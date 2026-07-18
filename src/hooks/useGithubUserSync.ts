@@ -183,6 +183,68 @@ export function useGithubUserSync() {
     }
   }, []);
 
+  // ── Push/pull the SHARED curriculum (one file, reaches every learner) ───────
+  // Distinct from pushVocab/pullVocab above, which are per-user progress.
+  // This is the admin "push to all learners" mechanism: one JSON file at a
+  // fixed path that every device pulls on login (see App.tsx), no rebuild or
+  // redeploy needed — unlike the VITE_SHEET_CSV_URL build-time approach, this
+  // works immediately from a running admin session as long as GitHub Sync is
+  // configured (Admin Panel → GitHub Sync).
+  const SHARED_VOCAB_PATH = 'data/shared/vocabulary.json';
+
+  const pushSharedVocabulary = useCallback(async (
+    words: Partial<VocabularyWord>[],
+    pushedBy?: string
+  ): Promise<SyncResult> => {
+    const config = getConfig();
+    if (!config) return { success: false, message: 'GitHub not configured — set up in Admin Panel → GitHub Sync' };
+    try {
+      const existing = await ghGet(config, SHARED_VOCAB_PATH);
+      const payload = {
+        words,
+        updatedAt: new Date().toISOString(),
+        pushedBy: pushedBy || 'admin',
+        count: words.length,
+      };
+      await ghPut(config, SHARED_VOCAB_PATH, payload, existing?.sha, `push shared vocabulary (${words.length} words)`);
+      return { success: true, message: `Pushed ${words.length} words to all learners`, count: words.length };
+    } catch (e) {
+      return { success: false, message: (e as Error).message };
+    }
+  }, []);
+
+  const pullSharedVocabulary = useCallback(async (): Promise<
+    SyncResult & { words?: Partial<VocabularyWord>[]; updatedAt?: string }
+  > => {
+    const config = getConfig();
+    if (!config) return { success: false, message: 'GitHub not configured' };
+    try {
+      const file = await ghGet(config, SHARED_VOCAB_PATH);
+      if (!file) return { success: false, message: 'No shared vocabulary pushed yet' };
+      const data = JSON.parse(file.content) as { words: Partial<VocabularyWord>[]; updatedAt: string };
+      const words = Array.isArray(data.words) ? data.words : [];
+      return { success: true, message: `Found ${words.length} shared words`, words, updatedAt: data.updatedAt, count: words.length };
+    } catch (e) {
+      return { success: false, message: (e as Error).message };
+    }
+  }, []);
+
+  // Clears the shared curriculum file on GitHub entirely — the "push" side
+  // of an admin's reset-all-data flow, so stale shared vocabulary doesn't
+  // get pulled back down to learners' devices after a local reset.
+  const clearSharedVocabulary = useCallback(async (): Promise<SyncResult> => {
+    const config = getConfig();
+    if (!config) return { success: false, message: 'GitHub not configured' };
+    try {
+      const existing = await ghGet(config, SHARED_VOCAB_PATH);
+      if (!existing) return { success: true, message: 'Already empty' };
+      await ghPut(config, SHARED_VOCAB_PATH, { words: [], updatedAt: new Date().toISOString(), pushedBy: 'admin (reset)', count: 0 }, existing.sha, 'reset shared vocabulary');
+      return { success: true, message: 'Shared vocabulary cleared for all learners' };
+    } catch (e) {
+      return { success: false, message: (e as Error).message };
+    }
+  }, []);
+
   // ── Pull vocabulary for one user ─────────────────────────────────────────────
   const pullVocab = useCallback(async (
     userId: string
@@ -212,5 +274,8 @@ export function useGithubUserSync() {
     }, delayMs);
   }, [pushVocab]);
 
-  return { pushUserRegistry, pullUserRegistry, pushVocab, pullVocab, schedulePush };
+  return {
+    pushUserRegistry, pullUserRegistry, pushVocab, pullVocab, schedulePush,
+    pushSharedVocabulary, pullSharedVocabulary, clearSharedVocabulary,
+  };
 }

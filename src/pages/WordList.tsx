@@ -1,10 +1,14 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import {
   Search,
   Plus,
   SlidersHorizontal,
   Import,
+  ChevronLeft,
+  ChevronRight,
+  ChevronsLeft,
+  ChevronsRight,
 } from 'lucide-react';
 import { useApp } from '@/App';
 import { useAuth } from '@/hooks/useAuth';
@@ -31,6 +35,8 @@ const SORT_OPTIONS: { value: SortOption; label: string }[] = [
   { value: 'studied', label: 'Most Studied' },
 ];
 
+const PAGE_SIZE = 60;
+
 export function WordList() {
   const { vocabulary } = useApp();
   const { currentUser } = useAuth();
@@ -44,10 +50,23 @@ export function WordList() {
   const [deleteWordId, setDeleteWordId] = useState<string | null>(null);
   const [deleteWordName, setDeleteWordName] = useState('');
   const [showSortDropdown, setShowSortDropdown] = useState(false);
+  const [page, setPage] = useState(1);
 
   const filteredWords = useMemo(() => {
     return vocabulary.getFilteredWords(activeFilter, sortOption, searchQuery);
   }, [vocabulary, activeFilter, sortOption, searchQuery]);
+
+  // A library can hold up to 10,000 words — rendering all of them at once
+  // would mean tens of thousands of DOM nodes and a page that scrolls and
+  // types like molasses. Paginate instead; page size stays fast no matter
+  // how large the underlying library grows.
+  const totalPages = Math.max(1, Math.ceil(filteredWords.length / PAGE_SIZE));
+  useEffect(() => { setPage(1); }, [activeFilter, sortOption, searchQuery]);
+  useEffect(() => { if (page > totalPages) setPage(totalPages); }, [totalPages, page]);
+  const pagedWords = useMemo(
+    () => filteredWords.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE),
+    [filteredWords, page]
+  );
 
   const handleEdit = (word: VocabularyWord) => {
     setEditWord(word);
@@ -172,23 +191,53 @@ export function WordList() {
 
       {/* Word Grid */}
       {filteredWords.length > 0 ? (
-        <div className="grid gap-4 md:grid-cols-2">
-          {filteredWords.map((word, i) => (
-            <motion.div
-              key={word.id}
-              initial={{ opacity: 0, y: 16 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.25, delay: Math.min(i * 0.05, 0.5) }}
-            >
-              <WordCard
-                word={word}
-                onEdit={handleEdit}
-                onDelete={handleDelete}
-                showTranslations={vocabulary.settings.showTranslations}
-              />
-            </motion.div>
-          ))}
-        </div>
+        <>
+          <p className="text-xs text-muted-foreground">
+            Showing {(page - 1) * PAGE_SIZE + 1}–{Math.min(page * PAGE_SIZE, filteredWords.length)} of {filteredWords.length} word{filteredWords.length === 1 ? '' : 's'}
+          </p>
+          <div className="grid gap-4 md:grid-cols-2">
+            {pagedWords.map((word, i) => (
+              <motion.div
+                key={word.id}
+                initial={{ opacity: 0, y: 16 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.25, delay: Math.min(i * 0.03, 0.3) }}
+              >
+                <WordCard
+                  word={word}
+                  onEdit={handleEdit}
+                  onDelete={handleDelete}
+                  showTranslations={vocabulary.settings.showTranslations}
+                />
+              </motion.div>
+            ))}
+          </div>
+
+          {/* Pagination */}
+          {totalPages > 1 && (
+            <div className="flex items-center justify-center gap-1.5 pt-2">
+              <button onClick={() => setPage(1)} disabled={page === 1}
+                className="flex h-9 w-9 items-center justify-center rounded-lg border border-border bg-card text-muted-foreground hover:bg-muted/50 disabled:opacity-30 disabled:cursor-not-allowed">
+                <ChevronsLeft className="h-4 w-4" strokeWidth={1.5} />
+              </button>
+              <button onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page === 1}
+                className="flex h-9 w-9 items-center justify-center rounded-lg border border-border bg-card text-muted-foreground hover:bg-muted/50 disabled:opacity-30 disabled:cursor-not-allowed">
+                <ChevronLeft className="h-4 w-4" strokeWidth={1.5} />
+              </button>
+              <span className="px-3 text-sm font-medium text-foreground">
+                Page {page} of {totalPages}
+              </span>
+              <button onClick={() => setPage(p => Math.min(totalPages, p + 1))} disabled={page === totalPages}
+                className="flex h-9 w-9 items-center justify-center rounded-lg border border-border bg-card text-muted-foreground hover:bg-muted/50 disabled:opacity-30 disabled:cursor-not-allowed">
+                <ChevronRight className="h-4 w-4" strokeWidth={1.5} />
+              </button>
+              <button onClick={() => setPage(totalPages)} disabled={page === totalPages}
+                className="flex h-9 w-9 items-center justify-center rounded-lg border border-border bg-card text-muted-foreground hover:bg-muted/50 disabled:opacity-30 disabled:cursor-not-allowed">
+                <ChevronsRight className="h-4 w-4" strokeWidth={1.5} />
+              </button>
+            </div>
+          )}
+        </>
       ) : (
         <div className="flex flex-col items-center justify-center rounded-2xl border border-border bg-card py-16">
           <div className="mb-4 flex h-20 w-20 items-center justify-center rounded-full bg-muted/50">
