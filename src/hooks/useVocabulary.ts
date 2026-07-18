@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useMemo } from 'react';
+import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { v4 as uuidv4 } from 'uuid';
 import type { VocabularyWord, CEFRLevel, StudySession, UserProfile, AppSettings, FilterLevel, SortOption, Achievement } from '@/types/vocabulary';
 
@@ -285,12 +285,31 @@ function loadFromStorage<T>(key: string, fallback: T): T {
  * makes every downstream `.word` access safe without having to defensively
  * guard dozens of call sites individually.
  */
+function coerceWord(w: any): VocabularyWord {
+  return {
+    ...w,
+    word: String(w.word),
+    definition: typeof w.definition === 'string' ? w.definition : '',
+    exampleSentence: typeof w.exampleSentence === 'string' ? w.exampleSentence : '',
+    partOfSpeech: w.partOfSpeech || 'noun',
+    cefrLevel: w.cefrLevel || 'B1',
+    difficulty: w.difficulty || 'medium',
+    studyCount: typeof w.studyCount === 'number' ? w.studyCount : 0,
+    correctCount: typeof w.correctCount === 'number' ? w.correctCount : 0,
+    isStarred: !!w.isStarred,
+    isLearned: !!w.isLearned,
+    dateAdded: typeof w.dateAdded === 'string' ? w.dateAdded : new Date().toISOString(),
+  };
+}
+
 function sanitizeWords(arr: unknown): VocabularyWord[] {
   if (!Array.isArray(arr)) return [];
-  return arr.filter(
-    (w): w is VocabularyWord =>
-      !!w && typeof w === 'object' && typeof (w as any).word === 'string' && (w as any).word.trim() !== ''
-  );
+  return arr
+    .filter(
+      (w): w is Record<string, unknown> =>
+        !!w && typeof w === 'object' && typeof (w as any).word === 'string' && (w as any).word.trim() !== ''
+    )
+    .map(coerceWord);
 }
 
 function saveToStorage<T>(key: string, value: T): boolean {
@@ -400,19 +419,70 @@ function upsertWords(
 export function useVocabulary(dataKeyPrefix?: string) {
   const KEYS = useMemo(() => makeStorageKeys(dataKeyPrefix), [dataKeyPrefix]);
 
-  const [words, setWords] = useState<VocabularyWord[]>(() => {
-    const userWords = sanitizeWords(loadFromStorage<VocabularyWord[]>(KEYS.words, INITIAL_WORDS));
-    // Merge shared sheet words (written by admin sync) into this user's word list
-    // on every app load so ALL users see the latest synced vocabulary —
-    // upsert, not skip-only, so edits to existing words show up too.
+  // ── Storage architecture ─────────────────────────────────────────────────
+  // Before this, EVERY word — a learner's own additions AND the entire
+  // admin-pushed shared curriculum — lived together in one array that got
+  // persisted under this user's OWN per-account key (KEYS.words). That meant
+  // an 8,000-10,000 word curriculum was duplicated in full into every single
+  // account's storage on the same browser (a classroom computer with 5
+  // student accounts stored the same curriculum 5 times over). localStorage
+  // is only good for ~5-10MB per ORIGIN, shared across every account on that
+  // browser — so this reliably ran out ("Couldn't save your words — your
+  // browser's storage is full") well before reaching the 8,000-10,000 word
+  // scale this app is meant to support.
+  //
+  // Fix: split into three small, purpose-specific stores instead of one
+  // big one:
+  //   • manualWords    — words THIS learner typed in themselves. Persisted
+  //                       per-account (KEYS.words), but stays small no
+  //                       matter how big the curriculum gets.
+  //   • sharedContent   — the admin curriculum (word/definition/example/etc).
+  //                       Persisted ONCE, origin-wide (GS_WORDS_KEY) — every
+  //                       account reads the same copy instead of storing its
+  //                       own. This is the piece that actually scales to
+  //                       8,000-10,000+ words, and now only exists once.
+  //   • sharedProgress  — per-learner study progress (star/learned/study
+  //                       count/etc) on curriculum words, keyed by word id.
+  //                       Persisted per-account, but only ever holds entries
+  //                       for words this learner has actually studied or
+  //                       starred — typically a small fraction of the full
+  //                       curriculum — so it stays small too.
+  // The `words` array this hook returns is still the full combined list
+  // (unchanged for every page that reads vocabulary.words), computed from
+  // the three stores in memory rather than persisted as one giant blob.
+  const initRef = useRef<{ manual: VocabularyWord[]; shared: VocabularyWord[] } | null>(null);
+  function getInitialSplit() {
+    if (initRef.current) return initRef.current;
+
+    const rawPersonal = sanitizeWords(loadFromStorage<VocabularyWord[]>(KEYS.words, INITIAL_WORDS));
+    // One-time migration for accounts that already have curriculum words
+    // duplicated into their personal storage from before this split
+    // existed: fold those into the shared store, then drop them from
+    // personal storage below so they're never written there again.
+    const legacyShared = rawPersonal.filter(w => w.source === 'shared');
+    const manual = rawPersonal.filter(w => w.source !== 'shared');
+
+    let shared: VocabularyWord[];
     try {
-      const sheetWords = sanitizeWords(JSON.parse(localStorage.getItem(GS_WORDS_KEY) || '[]'));
-      if (sheetWords.length > 0) {
-        return upsertWords(userWords, sheetWords).result;
-      }
-    } catch { /* ignore */ }
-    return userWords;
-  });
+      shared = sanitizeWords(JSON.parse(localStorage.getItem(GS_WORDS_KEY) || '[]'));
+    } catch {
+      shared = [];
+    }
+    if (legacyShared.length > 0) {
+      shared = upsertWords(shared, legacyShared, 'shared').result;
+      try { localStorage.setItem(GS_WORDS_KEY, JSON.stringify(shared)); } catch { /* full/private-mode storage — safe to skip, a future admin push will re-populate it */ }
+    }
+
+    initRef.current = { manual, shared };
+    return initRef.current;
+  }
+
+  const [manualWords, setManualWords] = useState<VocabularyWord[]>(() => getInitialSplit().manual);
+  const [sharedContent, setSharedContent] = useState<VocabularyWord[]>(() => getInitialSplit().shared);
+  const [sharedProgress, setSharedProgress] = useState<Record<string, Partial<VocabularyWord> & { hidden?: boolean }>>(() =>
+    loadFromStorage<Record<string, Partial<VocabularyWord> & { hidden?: boolean }>>(KEYS.words + '_progress', {})
+  );
+
   const [sessions, setSessions] = useState<StudySession[]>(() =>
     loadFromStorage(KEYS.sessions, [])
   );
@@ -426,24 +496,40 @@ export function useVocabulary(dataKeyPrefix?: string) {
     loadFromStorage(KEYS.achievements, ACHIEVEMENTS)
   );
 
+  // The combined view every page in the app actually reads. Curriculum
+  // words get this learner's personal progress (star/learned/study count)
+  // laid on top, and anything this learner chose to remove from their own
+  // view (via deleteWord on a shared word — see below) is filtered out here
+  // without touching the shared curriculum itself.
+  const words = useMemo(() => {
+    const overlaidShared = sharedContent
+      .filter(w => !sharedProgress[w.id]?.hidden)
+      .map(w => {
+        const p = sharedProgress[w.id];
+        if (!p) return w;
+        const { hidden: _hidden, ...progressFields } = p;
+        return { ...w, ...progressFields };
+      });
+    return [...manualWords, ...overlaidShared];
+  }, [manualWords, sharedContent, sharedProgress]);
+
   // Surfaces failures that saveToStorage used to only console.error — most
-  // importantly a quota-exceeded save of the word list itself, which at
-  // library sizes approaching localStorage's ~5-10MB per-origin limit
-  // (roughly 8,000-10,000 fully-populated words) could otherwise fail
+  // importantly a quota-exceeded save, which could otherwise fail
   // completely silently: the import would *look* successful, then vanish
   // on the next reload with no explanation.
   const [storageWarning, setStorageWarning] = useState<string | null>(null);
   const clearStorageWarning = useCallback(() => setStorageWarning(null), []);
 
   useEffect(() => {
-    const ok = saveToStorage(KEYS.words, words);
+    const ok = saveToStorage(KEYS.words, manualWords);
     if (!ok) {
       setStorageWarning(
-        `Couldn't save your ${words.length.toLocaleString()} words — your browser's storage is full. ` +
-        `Try removing some words, or ask an admin to prune the shared curriculum.`
+        `Couldn't save your ${manualWords.length.toLocaleString()} word(s) — your browser's storage is full. ` +
+        `Try removing a few of your own added words.`
       );
     }
-  }, [words, KEYS.words]);
+  }, [manualWords, KEYS.words]);
+  useEffect(() => { saveToStorage(KEYS.words + '_progress', sharedProgress); }, [sharedProgress, KEYS.words]);
   useEffect(() => { saveToStorage(KEYS.sessions, sessions); }, [sessions, KEYS.sessions]);
   useEffect(() => { saveToStorage(KEYS.profile, profile); }, [profile, KEYS.profile]);
   useEffect(() => { saveToStorage(KEYS.settings, settings); }, [settings, KEYS.settings]);
@@ -451,16 +537,13 @@ export function useVocabulary(dataKeyPrefix?: string) {
 
   // ── Cross-tab live sync ──────────────────────────────────────────────────
   // Every way words get added — manually via AddWordModal, CSV/Excel import,
-  // admin Google Sheet sync, or GitHub sync — ultimately calls setWords(),
-  // which the effect above writes to KEYS.words. The browser fires a native
-  // `storage` event in every OTHER open tab (never the tab that made the
-  // change) whenever that happens. Listening for it means: import a CSV in
-  // one tab, and a Flashcards/Quiz/Matching/Spelling/Categories session open
-  // in another tab picks up the new words immediately — no reload needed,
-  // and no risk of a mid-session page reload losing study progress.
-  //
-  // The GitHub shared-curriculum pull (App.tsx) already covers the
-  // cross-DEVICE case; this covers the cross-TAB case on one device.
+  // admin Google Sheet sync, or GitHub sync — writes to one of the three
+  // stores above. The browser fires a native `storage` event in every OTHER
+  // open tab (never the tab that made the change) whenever a localStorage
+  // key changes. Listening for it means: import a CSV in one tab, and a
+  // Flashcards/Quiz/Matching/Spelling/Categories session open in another tab
+  // (even under a different logged-in account, for the shared-curriculum
+  // key) picks up the change immediately — no reload needed.
   const [externalSyncNotice, setExternalSyncNotice] = useState<{ added: number; updated: number } | null>(null);
   const clearExternalSyncNotice = useCallback(() => setExternalSyncNotice(null), []);
 
@@ -471,12 +554,12 @@ export function useVocabulary(dataKeyPrefix?: string) {
       if (e.key === KEYS.words) {
         try {
           const incoming = sanitizeWords(JSON.parse(e.newValue));
-          setWords(prev => {
+          setManualWords(prev => {
             if (incoming.length > prev.length) {
               setExternalSyncNotice({ added: incoming.length - prev.length, updated: 0 });
             }
-            // Full replace, not upsert: this is the SAME user's own list as
-            // last saved by their other tab, so it's authoritative —
+            // Full replace, not upsert: this is the SAME account's own list
+            // as last saved by their other tab, so it's authoritative —
             // last-write-wins, consistent with how this app treats storage
             // everywhere else.
             return incoming;
@@ -487,12 +570,12 @@ export function useVocabulary(dataKeyPrefix?: string) {
 
       if (e.key === GS_WORDS_KEY) {
         try {
-          const sheetWords = sanitizeWords(JSON.parse(e.newValue));
-          if (sheetWords.length === 0) return;
-          setWords(prev => {
-            const { result, added, updated } = upsertWords(prev, sheetWords);
-            if (added > 0 || updated > 0) setExternalSyncNotice({ added, updated });
-            return result;
+          const incoming = sanitizeWords(JSON.parse(e.newValue));
+          setSharedContent(prev => {
+            if (incoming.length !== prev.length) {
+              setExternalSyncNotice({ added: Math.max(0, incoming.length - prev.length), updated: 0 });
+            }
+            return incoming;
           });
         } catch { /* ignore malformed payload */ }
       }
@@ -541,7 +624,7 @@ export function useVocabulary(dataKeyPrefix?: string) {
       difficulty: 'medium',
       source: wordData.source ?? 'manual',
     };
-    setWords(prev => [newWord, ...prev]);
+    setManualWords(prev => [newWord, ...prev]);
 
     if (settings.autoSync && settings.googleSheetUrl) {
       syncToGoogleSheets(newWord);
@@ -550,17 +633,67 @@ export function useVocabulary(dataKeyPrefix?: string) {
     return newWord;
   }, [settings]);
 
+  // Words this learner typed in themselves live in manualWords; curriculum
+  // words pushed by an admin live in sharedContent. The edit/delete buttons
+  // on a word card are admin-only in the UI (see WordCard.tsx), so any
+  // updateWord/deleteWord call reaching a curriculum word is a real admin
+  // curriculum edit and should apply to the shared curriculum itself, not
+  // just this admin's own view. Everyday study progress (studyCount,
+  // correctCount, isLearned, isStarred, lastStudied, nextReviewDate) is the
+  // one thing that's ALWAYS per-learner even for a curriculum word — that
+  // still goes to the small per-account overlay below.
+  const PROGRESS_FIELDS = useMemo(() => new Set<string>([
+    'studyCount', 'correctCount', 'isLearned', 'isStarred', 'lastStudied', 'nextReviewDate',
+  ]), []);
+
   const updateWord = useCallback((id: string, updates: Partial<VocabularyWord>) => {
-    setWords(prev => prev.map(w => w.id === id ? { ...w, ...updates } : w));
-  }, []);
+    if (manualWords.some(w => w.id === id)) {
+      setManualWords(prev => prev.map(w => w.id === id ? { ...w, ...updates } : w));
+      return;
+    }
+    const isContentEdit = Object.keys(updates).some(k => !PROGRESS_FIELDS.has(k));
+    if (isContentEdit) {
+      setSharedContent(prev => {
+        const next = prev.map(w => w.id === id ? { ...w, ...updates } : w);
+        try { localStorage.setItem(GS_WORDS_KEY, JSON.stringify(next)); }
+        catch { setStorageWarning(`Couldn't save the shared curriculum — the browser's storage is full.`); }
+        return next;
+      });
+    } else {
+      setSharedProgress(prev => ({ ...prev, [id]: { ...prev[id], ...updates } }));
+    }
+  }, [manualWords, PROGRESS_FIELDS]);
 
   const deleteWord = useCallback((id: string) => {
-    setWords(prev => prev.filter(w => w.id !== id));
-  }, []);
+    if (manualWords.some(w => w.id === id)) {
+      setManualWords(prev => prev.filter(w => w.id !== id));
+      return;
+    }
+    // Only reachable via the admin-only delete button — a real curriculum
+    // deletion, not a per-learner preference, so it removes the word from
+    // the shared curriculum for everyone (consistent with how CSV
+    // re-import / dedupe / reset already work).
+    setSharedContent(prev => {
+      const next = prev.filter(w => w.id !== id);
+      try { localStorage.setItem(GS_WORDS_KEY, JSON.stringify(next)); }
+      catch { setStorageWarning(`Couldn't save the shared curriculum — the browser's storage is full.`); }
+      return next;
+    });
+    setSharedProgress(prev => {
+      if (!(id in prev)) return prev;
+      const { [id]: _removed, ...rest } = prev;
+      return rest;
+    });
+  }, [manualWords]);
 
   const toggleStar = useCallback((id: string) => {
-    setWords(prev => prev.map(w => w.id === id ? { ...w, isStarred: !w.isStarred } : w));
-  }, []);
+    if (manualWords.some(w => w.id === id)) {
+      setManualWords(prev => prev.map(w => w.id === id ? { ...w, isStarred: !w.isStarred } : w));
+    } else {
+      const current = sharedProgress[id]?.isStarred ?? sharedContent.find(w => w.id === id)?.isStarred ?? false;
+      setSharedProgress(prev => ({ ...prev, [id]: { ...prev[id], isStarred: !current } }));
+    }
+  }, [manualWords, sharedProgress, sharedContent]);
 
   const importWords = useCallback((newWords: Omit<VocabularyWord, 'id' | 'dateAdded' | 'studyCount' | 'correctCount' | 'isLearned' | 'difficulty'>[]) => {
     const imported = newWords.map(w => ({
@@ -572,7 +705,7 @@ export function useVocabulary(dataKeyPrefix?: string) {
       isLearned: false,
       difficulty: 'medium' as const,
     }));
-    setWords(prev => [...imported, ...prev]);
+    setManualWords(prev => [...imported, ...prev]);
     return imported.length;
   }, []);
 
@@ -611,6 +744,8 @@ export function useVocabulary(dataKeyPrefix?: string) {
     return newSession;
   }, [profile]);
 
+  // Search by word text, definition, example sentence, synonyms, or
+  // translations; filter by CEFR level and/or category — all combinable.
   const getFilteredWords = useCallback((filter: FilterLevel, sort: SortOption, searchQuery: string, category?: string) => {
     let filtered = [...words];
 
@@ -626,8 +761,8 @@ export function useVocabulary(dataKeyPrefix?: string) {
       const q = searchQuery.toLowerCase();
       filtered = filtered.filter(w =>
         w.word.toLowerCase().includes(q) ||
-        w.definition.toLowerCase().includes(q) ||
-        w.exampleSentence.toLowerCase().includes(q) ||
+        (w.definition && w.definition.toLowerCase().includes(q)) ||
+        (w.exampleSentence && w.exampleSentence.toLowerCase().includes(q)) ||
         (w.synonym && w.synonym.toLowerCase().includes(q)) ||
         (w.laoTranslation && w.laoTranslation.toLowerCase().includes(q)) ||
         (w.thaiTranslation && w.thaiTranslation.toLowerCase().includes(q))
@@ -734,18 +869,11 @@ export function useVocabulary(dataKeyPrefix?: string) {
     }
   }, [settings.googleSheetUrl, words]);
 
-
-  // Merge words from Google Sheet/GitHub WITHOUT duplicating.
-  // Thin wrapper around upsertWords() — see that function for the actual logic.
-  // This is the ONLY function that should be used to bring in words from an
-  // external source (sheet/GitHub/CSV/Excel). Never use importWords for
-  // that — importWords always appends and will duplicate on every sync.
-  // Scans the CURRENT word list for duplicates (by normalized word text) and
-  // reports them without changing anything — used to show the admin exactly
-  // what's duplicated before/without committing to a cleanup.
+  // Scans the shared curriculum for duplicates (by normalized word text) and
+  // reports them without changing anything.
   const findDuplicateWords = useCallback((): { word: string; count: number; ids: string[] }[] => {
     const groups = new Map<string, { word: string; ids: string[] }>();
-    for (const w of words) {
+    for (const w of sharedContent) {
       if (!w.word) continue;
       const key = w.word.toLowerCase().trim();
       const g = groups.get(key);
@@ -756,20 +884,15 @@ export function useVocabulary(dataKeyPrefix?: string) {
       .filter(g => g.ids.length > 1)
       .map(g => ({ word: g.word, count: g.ids.length, ids: g.ids }))
       .sort((a, b) => b.count - a.count);
-  }, [words]);
+  }, [sharedContent]);
 
-  // Collapses existing duplicates (by normalized word text) down to ONE entry
-  // per word. This is the cleanup for words that got duplicated by the old
-  // sync bug BEFORE mergeSharedWords existed — that fix only stops NEW
-  // duplicates, it doesn't retroactively fix data that's already duplicated
-  // in a user's local storage or GitHub backup. Keeps the most complete
-  // content (first non-empty field across all copies) and merges study
-  // progress (max study/correct count, starred/learned if ANY copy was,
-  // earliest dateAdded) rather than arbitrarily picking one copy and
-  // discarding a learner's progress on the others.
+  // Collapses existing duplicates in the shared curriculum (by normalized
+  // word text) down to ONE entry per word, merging study-relevant content
+  // (first non-empty field across all copies) so nothing gets lost.
   const dedupeWords = useCallback((): { removedCount: number; uniqueCount: number } => {
     let removedCount = 0;
-    setWords(prev => {
+    let finalCount = 0;
+    setSharedContent(prev => {
       const order: string[] = [];
       const byKey = new Map<string, VocabularyWord>();
 
@@ -792,29 +915,67 @@ export function useVocabulary(dataKeyPrefix?: string) {
           category: existing.category ?? w.category,
           laoTranslation: existing.laoTranslation ?? w.laoTranslation,
           thaiTranslation: existing.thaiTranslation ?? w.thaiTranslation,
-          studyCount: Math.max(existing.studyCount || 0, w.studyCount || 0),
-          correctCount: Math.max(existing.correctCount || 0, w.correctCount || 0),
-          isStarred: existing.isStarred || w.isStarred,
-          isLearned: existing.isLearned || w.isLearned,
           dateAdded: existing.dateAdded && w.dateAdded
             ? (new Date(existing.dateAdded) < new Date(w.dateAdded) ? existing.dateAdded : w.dateAdded)
             : (existing.dateAdded || w.dateAdded),
         });
       }
-      return order.map(k => byKey.get(k)!);
+      const deduped = order.map(k => byKey.get(k)!);
+      finalCount = deduped.length;
+      try { localStorage.setItem(GS_WORDS_KEY, JSON.stringify(deduped)); }
+      catch { setStorageWarning(`Couldn't save the deduplicated curriculum — the browser's storage is full.`); }
+      return deduped;
     });
-    return { removedCount, uniqueCount: words.length - removedCount };
-  }, [words]);
+    return { removedCount, uniqueCount: finalCount };
+  }, []);
 
+  // Merge words into the appropriate store WITHOUT duplicating. Thin
+  // wrapper around upsertWords() — see that function for the actual logic.
+  //
+  // Incoming words are routed by their OWN `.source` tag, not blindly by
+  // the `source` param: this same function is used both for admin
+  // curriculum syncs (CSV/Sheet/GitHub shared pull — words with no tag or
+  // tag 'shared') AND for restoring a single learner's personal GitHub
+  // backup on a new device (which can contain that learner's own
+  // 'manual'-tagged words mixed in). Routing everything into the shared
+  // curriculum regardless of tag would leak a learner's private words into
+  // what every OTHER learner sees — so 'manual'-tagged words always go to
+  // this account's own private store, and everything else goes to the
+  // single origin-wide shared store.
   const mergeSharedWords = useCallback((incoming: Partial<VocabularyWord>[], source: 'shared' | 'manual' = 'shared') => {
+    const safeIncoming = Array.isArray(incoming) ? incoming.filter(w => !!w && typeof w === 'object') : [];
+    const manualIncoming = safeIncoming.filter(w => (w as any).source === 'manual');
+    const sharedIncoming = safeIncoming.filter(w => (w as any).source !== 'manual');
+
     let addedCount = 0;
     let updatedCount = 0;
-    setWords(prev => {
-      const { result, added, updated } = upsertWords(prev, incoming, source);
-      addedCount = added;
-      updatedCount = updated;
-      return result;
-    });
+
+    if (manualIncoming.length > 0) {
+      setManualWords(prev => {
+        const { result, added, updated } = upsertWords(prev, manualIncoming, 'manual');
+        addedCount += added;
+        updatedCount += updated;
+        return result;
+      });
+    }
+
+    if (sharedIncoming.length > 0) {
+      setSharedContent(prev => {
+        const { result, added, updated } = upsertWords(prev, sharedIncoming, source);
+        addedCount += added;
+        updatedCount += updated;
+        try {
+          localStorage.setItem(GS_WORDS_KEY, JSON.stringify(result));
+        } catch (error) {
+          setStorageWarning(
+            `Couldn't save the shared curriculum (${result.length.toLocaleString()} words) — the browser's storage is full. ` +
+            `Try removing unused/duplicate words from the curriculum.`
+          );
+        }
+        return result;
+      });
+    }
+
     return { added: addedCount, updated: updatedCount };
   }, []);
 
@@ -826,20 +987,14 @@ export function useVocabulary(dataKeyPrefix?: string) {
   // replace" an admin needs when they want the app's vocabulary to actually
   // MATCH a new source file, not just grow to include it.
   //
-  // Safety rules:
-  //  • Words the learner tagged 'manual' (added themselves) are NEVER
-  //    touched, no matter what's in the new set.
-  //  • A shared word that's still present in the new set keeps its study
-  //    progress (matched by word text) — this is a curriculum refresh, not
-  //    a progress wipe.
-  //  • A shared word that's no longer in the new set is removed.
+  // A curriculum word that's still present in the new set keeps its shared
+  // content refreshed; a learner's personal progress overlay for it (star/
+  // learned/study count) is untouched either way, since that lives
+  // separately per account.
   const replaceSharedWords = useCallback((newSharedWords: Partial<VocabularyWord>[]) => {
     let addedCount = 0, updatedCount = 0, removedCount = 0;
-    setWords(prev => {
-      const manual = prev.filter(w => w.source === 'manual');
-      const previousShared = prev.filter(w => w.source !== 'manual');
-
-      const { result: mergedShared, added, updated } = upsertWords(previousShared, newSharedWords);
+    setSharedContent(prev => {
+      const { result: mergedShared, added, updated } = upsertWords(prev, newSharedWords, 'shared');
 
       const newKeys = new Set(
         (Array.isArray(newSharedWords) ? newSharedWords : [])
@@ -852,36 +1007,34 @@ export function useVocabulary(dataKeyPrefix?: string) {
       updatedCount = updated;
       removedCount = mergedShared.length - finalShared.length;
 
-      return [...manual, ...finalShared];
+      try { localStorage.setItem(GS_WORDS_KEY, JSON.stringify(finalShared)); }
+      catch { setStorageWarning(`Couldn't save the shared curriculum (${finalShared.length.toLocaleString()} words) — the browser's storage is full.`); }
+
+      return finalShared;
     });
     return { added: addedCount, updated: updatedCount, removed: removedCount };
   }, []);
 
   // Admin "reset all data" action.
-  //  scope 'shared' — clears only admin-pushed words (source:'shared'),
-  //    keeping anything a learner added themselves. This is the safe
+  //  scope 'shared' — clears the shared curriculum only, keeping every
+  //    learner's own manually-added words untouched. This is the safe
   //    default: "clear the curriculum, keep my own notes."
-  //  scope 'all'    — clears every word, including manual additions. Meant
-  //    to be gated behind an explicit, extra-confirmed admin action since
-  //    it also deletes things learners typed in themselves.
+  //  scope 'all'    — also clears THIS account's own manual words. Meant to
+  //    be gated behind an explicit, extra-confirmed admin action.
   // Either way: study SESSIONS history is left alone (it's a log of past
   // activity, not vocabulary content) — pair with resetProgress() if a
   // full wipe including stats/streaks is also wanted.
   const clearVocabulary = useCallback((scope: 'shared' | 'all' = 'shared') => {
-    let removedCount = 0;
-    setWords(prev => {
-      const kept = scope === 'all' ? [] : prev.filter(w => w.source === 'manual');
-      removedCount = prev.length - kept.length;
-      return kept;
-    });
-    // Also clear the locally-cached shared snapshot so a page reload
-    // doesn't immediately re-merge the words we just cleared back in.
+    const removedCount = scope === 'all' ? manualWords.length + sharedContent.length : sharedContent.length;
+    if (scope === 'all') setManualWords([]);
+    setSharedContent([]);
+    setSharedProgress({});
     try { localStorage.removeItem(GS_WORDS_KEY); } catch { /* ignore */ }
     return { removed: removedCount };
-  }, []);
+  }, [manualWords, sharedContent]);
 
   const resetProgress = useCallback(() => {
-    setWords(prev => prev.map(w => ({
+    setManualWords(prev => prev.map(w => ({
       ...w,
       studyCount: 0,
       correctCount: 0,
@@ -889,6 +1042,7 @@ export function useVocabulary(dataKeyPrefix?: string) {
       difficulty: 'medium' as const,
       nextReviewDate: undefined,
     })));
+    setSharedProgress({});
     setSessions([]);
     setProfile(prev => ({ ...prev, currentStreak: 0, longestStreak: 0 }));
   }, []);
