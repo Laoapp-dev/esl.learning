@@ -22,6 +22,12 @@ export interface VocabularyWord {
   isLearned: boolean;
   difficulty: 'easy' | 'medium' | 'hard';
   nextReviewDate?: string;
+  // Where this word came from. 'shared' = pushed by an admin via CSV/Google
+  // Sheet/shared sync; 'manual' = the learner added it themselves. This lets
+  // an admin curriculum reset/replace safely touch only words THEY pushed,
+  // never a learner's own additions. Undefined is treated as 'manual' for
+  // backward compatibility with words saved before this field existed.
+  source?: 'shared' | 'manual';
 }
 
 export interface StudySession {
