@@ -56,7 +56,7 @@ export function WordList() {
     return vocabulary.getFilteredWords(activeFilter, sortOption, searchQuery);
   }, [vocabulary, activeFilter, sortOption, searchQuery]);
 
-  // A library can hold up to 10,000 words — rendering all of them at once
+  // A library can hold up to 20,000 words — rendering all of them at once
   // would mean tens of thousands of DOM nodes and a page that scrolls and
   // types like molasses. Paginate instead; page size stays fast no matter
   // how large the underlying library grows.

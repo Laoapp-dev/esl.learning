@@ -1,11 +1,10 @@
 import { Routes, Route } from 'react-router-dom';
-import { createContext, useContext, useCallback, useEffect, useRef, Suspense, lazy, type ComponentType } from 'react';
+import { createContext, useContext, useCallback, useEffect, useRef, Suspense, lazy } from 'react';
 import { useVocabulary } from '@/hooks/useVocabulary';
 import { useToast } from '@/hooks/useToast';
 import { useAuth, AuthProvider } from '@/hooks/useAuth';
 import { useGoogleSheet } from '@/hooks/useGoogleSheet';
 import { useGithubUserSync } from '@/hooks/useGithubUserSync';
-import { useFirestoreLiveVocabulary } from '@/hooks/useFirestoreLiveVocabulary';
 import { Sidebar } from '@/components/Sidebar';
 import { MobileNav } from '@/components/MobileNav';
 import { ToastContainer } from '@/components/ToastContainer';
@@ -15,79 +14,22 @@ import { AuthPage } from '@/pages/AuthPage';
 // Every page below is its own separate JS chunk, loaded on demand instead of
 // all being bundled into one giant file that every visitor has to download
 // (and that has to succeed loading perfectly) before anything can render.
-//
-// This also fixes a real risk that existed before: AdminPanel pulls in
-// Firestore (`useFirestoreVocabulary`), and because AdminPanel used to be
-// imported eagerly at the top of this file, Firebase was being initialized
-// for EVERY visitor on EVERY page load — not just for admins opening the
-// admin panel. Now that code only loads if an admin actually navigates to
-// /admin.
-// ── Resilient lazy loading ───────────────────────────────────────────────────
-// A plain `lazy(() => import(...))` throws straight into the top-level
-// ErrorBoundary the instant a chunk request fails — which happens far more
-// often than it should: a flaky mobile connection, a tab that's been open
-// since before the latest deploy requesting a JS filename that no longer
-// exists on the server, or the service worker swapping in new precached
-// assets mid-navigation. None of those mean the app is actually broken, but
-// without a retry they all produced the exact "Something went wrong" screen
-// on what should have just been "try that navigation again."
-//
-// lazyWithRetry: on failure, waits briefly and retries the import a couple of
-// times (covers transient network blips) before giving up. If every retry
-// still fails — the classic sign of a stale build referencing a hashed
-// filename that's been replaced by a new deploy — it forces a single full
-// page reload (guarded by sessionStorage so a genuinely broken deploy can't
-// reload-loop forever) so the browser picks up the current build's chunk
-// manifest instead of the stale one it started this tab with.
-function lazyWithRetry<T extends { default: ComponentType<any> }>(
-  importFn: () => Promise<T>,
-  chunkName: string,
-) {
-  return lazy(async () => {
-    const attempts = 3;
-    let lastErr: unknown;
-    for (let i = 0; i < attempts; i++) {
-      try {
-        return await importFn();
-      } catch (err) {
-        lastErr = err;
-        if (i < attempts - 1) {
-          await new Promise(res => setTimeout(res, 300 * (i + 1)));
-        }
-      }
-    }
-    const reloadGuardKey = `esl_chunk_reload_${chunkName}`;
-    if (sessionStorage.getItem(reloadGuardKey) !== '1') {
-      sessionStorage.setItem(reloadGuardKey, '1');
-      window.location.reload();
-      // Never resolves — the reload is already in flight, so there's no
-      // meaningful component to return and no point rendering the error UI
-      // for the instant before the page navigates away.
-      return new Promise<T>(() => {});
-    }
-    // Already tried the reload-once fix for this chunk this session and it
-    // still failed — surface it for real via the ErrorBoundary rather than
-    // looping reloads forever.
-    throw lastErr;
-  });
-}
-
-const Dashboard      = lazyWithRetry(() => import('@/pages/Dashboard').then(m => ({ default: m.Dashboard })), 'dashboard');
-const WordList       = lazyWithRetry(() => import('@/pages/WordList').then(m => ({ default: m.WordList })), 'wordlist');
-const Favorites      = lazyWithRetry(() => import('@/pages/Favorites').then(m => ({ default: m.Favorites })), 'favorites');
-const LevelJourney   = lazyWithRetry(() => import('@/pages/LevelJourney').then(m => ({ default: m.LevelJourney })), 'leveljourney');
-const Categories     = lazyWithRetry(() => import('@/pages/Categories').then(m => ({ default: m.Categories })), 'categories');
-const StudyLayout    = lazyWithRetry(() => import('@/pages/StudyLayout').then(m => ({ default: m.StudyLayout })), 'studylayout');
-const Flashcards     = lazyWithRetry(() => import('@/pages/Flashcards').then(m => ({ default: m.Flashcards })), 'flashcards');
-const Quiz           = lazyWithRetry(() => import('@/pages/Quiz').then(m => ({ default: m.Quiz })), 'quiz');
-const Matching       = lazyWithRetry(() => import('@/pages/Matching').then(m => ({ default: m.Matching })), 'matching');
-const Spelling       = lazyWithRetry(() => import('@/pages/Spelling').then(m => ({ default: m.Spelling })), 'spelling');
-const Settings       = lazyWithRetry(() => import('@/pages/Settings').then(m => ({ default: m.Settings })), 'settings');
-const Profile        = lazyWithRetry(() => import('@/pages/Profile').then(m => ({ default: m.Profile })), 'profile');
-const AdminPanel     = lazyWithRetry(() => import('@/pages/AdminPanel').then(m => ({ default: m.AdminPanel })), 'adminpanel');
-const UserDashboard  = lazyWithRetry(() => import('@/pages/UserDashboard').then(m => ({ default: m.UserDashboard })), 'userdashboard');
-const PreTest        = lazyWithRetry(() => import('@/pages/PreTest').then(m => ({ default: m.PreTest })), 'pretest');
-const Practice       = lazyWithRetry(() => import('@/pages/Practice').then(m => ({ default: m.Practice })), 'practice');
+const Dashboard      = lazy(() => import('@/pages/Dashboard').then(m => ({ default: m.Dashboard })));
+const WordList       = lazy(() => import('@/pages/WordList').then(m => ({ default: m.WordList })));
+const Favorites      = lazy(() => import('@/pages/Favorites').then(m => ({ default: m.Favorites })));
+const LevelJourney   = lazy(() => import('@/pages/LevelJourney').then(m => ({ default: m.LevelJourney })));
+const Categories     = lazy(() => import('@/pages/Categories').then(m => ({ default: m.Categories })));
+const StudyLayout    = lazy(() => import('@/pages/StudyLayout').then(m => ({ default: m.StudyLayout })));
+const Flashcards     = lazy(() => import('@/pages/Flashcards').then(m => ({ default: m.Flashcards })));
+const Quiz           = lazy(() => import('@/pages/Quiz').then(m => ({ default: m.Quiz })));
+const Matching       = lazy(() => import('@/pages/Matching').then(m => ({ default: m.Matching })));
+const Spelling       = lazy(() => import('@/pages/Spelling').then(m => ({ default: m.Spelling })));
+const Settings       = lazy(() => import('@/pages/Settings').then(m => ({ default: m.Settings })));
+const Profile        = lazy(() => import('@/pages/Profile').then(m => ({ default: m.Profile })));
+const AdminPanel     = lazy(() => import('@/pages/AdminPanel').then(m => ({ default: m.AdminPanel })));
+const UserDashboard  = lazy(() => import('@/pages/UserDashboard').then(m => ({ default: m.UserDashboard })));
+const PreTest        = lazy(() => import('@/pages/PreTest').then(m => ({ default: m.PreTest })));
+const Practice       = lazy(() => import('@/pages/Practice').then(m => ({ default: m.Practice })));
 
 function PageLoading() {
   return (
@@ -188,15 +130,6 @@ function AppInner() {
     const id = setInterval(run, minutes * 60_000); // and keep refreshing while the tab stays open
     return () => clearInterval(id);
   }, [isAuthenticated, sheetUrl]); // eslint-disable-line
-
-  // ── Firestore live sync for EVERY user (real-time, no polling, no button) ────
-  // If Firebase env vars are configured (see MIGRATION_GUIDE.md), this opens a
-  // live connection: the moment the admin's import script writes a new/changed
-  // word to Firestore, every open app updates within seconds automatically —
-  // no reload, no manual sync, no per-device setup. Safe to leave the Google
-  // Sheet auto-sync above running at the same time; both funnel into the same
-  // dedup-safe mergeSharedWords, so nothing can double up between the two.
-  useFirestoreLiveVocabulary(isAuthenticated, (words) => vocabulary.mergeSharedWords(words));
 
   // ── Shared curriculum sync via GitHub (EVERY user, works without a rebuild) ──
   // This is what makes "admin resets + imports CSV/Sheet + pushes" actually

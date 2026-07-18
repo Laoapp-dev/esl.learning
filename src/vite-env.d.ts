@@ -8,13 +8,6 @@ interface ImportMetaEnv {
   readonly VITE_SHEET_CSV_URL?: string;
   /** How often (minutes) each open app tab re-fetches the sheet automatically. */
   readonly VITE_SHEET_AUTO_SYNC_MIN?: string;
-
-  readonly VITE_FIREBASE_API_KEY?: string;
-  readonly VITE_FIREBASE_AUTH_DOMAIN?: string;
-  readonly VITE_FIREBASE_PROJECT_ID?: string;
-  readonly VITE_FIREBASE_STORAGE_BUCKET?: string;
-  readonly VITE_FIREBASE_MESSAGING_SENDER_ID?: string;
-  readonly VITE_FIREBASE_APP_ID?: string;
 }
 
 interface ImportMeta {

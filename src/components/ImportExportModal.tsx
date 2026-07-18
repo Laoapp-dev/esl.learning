@@ -14,12 +14,12 @@ interface ImportExportModalProps {
 // Max file size we'll attempt to read client-side. Anything bigger is far
 // more likely to be the wrong file than a real vocabulary list, and trying
 // to parse it can lock up the tab for a long time with no feedback.
-// 25MB comfortably covers a full 10,000-row file even with long
+// 50MB comfortably covers a full 20,000-row file even with long
 // definitions/example sentences/Lao+Thai translations on every row
-// (a realistic fully-populated row is ~0.5-1KB, so 10,000 rows is
-// typically 5-10MB — this leaves generous headroom above that).
-const MAX_IMPORT_FILE_BYTES = 25 * 1024 * 1024; // 25 MB
-const MAX_IMPORT_ROWS = 10_000;
+// (benchmarked: a realistic fully-populated 20,000-row CSV is ~5-10MB and
+// parses in well under 200ms, so this leaves generous headroom above that).
+const MAX_IMPORT_FILE_BYTES = 50 * 1024 * 1024; // 50 MB
+const MAX_IMPORT_ROWS = 20_000;
 
 function normalizeRows(parsed: any[]): Partial<VocabularyWord>[] {
   return parsed

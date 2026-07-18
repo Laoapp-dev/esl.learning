@@ -215,7 +215,7 @@ export function AdminPanel() {
     e.target.value = ''; // reset so re-selecting the same file still fires onChange
     if (!file) return;
     if (file.size === 0) { addToast('That file is empty', 'error'); return; }
-    if (file.size > 25 * 1024 * 1024) { addToast('File is too large to import (max 25MB, roughly 10,000 rows)', 'error'); return; }
+    if (file.size > 50 * 1024 * 1024) { addToast('File is too large to import (max 50MB, roughly 20,000 rows)', 'error'); return; }
 
     try {
       Papa.parse(file, {
@@ -234,13 +234,13 @@ export function AdminPanel() {
               return;
             }
             let truncated = false;
-            if (rows.length > 10_000) {
-              rows = rows.slice(0, 10_000);
+            if (rows.length > 20_000) {
+              rows = rows.slice(0, 20_000);
               truncated = true;
             }
             const { added, updated } = vocabulary.mergeSharedWords(rows as any, 'shared');
             addToast(
-              (truncated ? `File had more than 10,000 rows — imported the first 10,000. ` : '') +
+              (truncated ? `File had more than 20,000 rows — imported the first 20,000. ` : '') +
               `Imported: ${added} new, ${updated} updated (re-uploading the same file is safe). Click "Push to All Learners" to send this to every device.`,
               'success'
             );
