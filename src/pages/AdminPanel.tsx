@@ -217,6 +217,57 @@ export function AdminPanel() {
     if (file.size === 0) { addToast('That file is empty', 'error'); return; }
     if (file.size > 50 * 1024 * 1024) { addToast('File is too large to import (max 50MB, roughly 20,000 rows)', 'error'); return; }
 
+    // Shared by both the CSV and JSON paths below: validates row shape,
+    // caps at 20,000 rows, merges into the shared curriculum, and reports
+    // the outcome the same way regardless of which file format was used.
+    const importRows = (rows: Record<string, unknown>[]) => {
+      try {
+        let filtered = rows.filter(x => x && typeof x === 'object' && x.word && String(x.word).trim());
+        if (filtered.length === 0) {
+          addToast('No valid rows found — check that each entry has a "word" field', 'error');
+          return;
+        }
+        let truncated = false;
+        if (filtered.length > 20_000) {
+          filtered = filtered.slice(0, 20_000);
+          truncated = true;
+        }
+        const { added, updated } = vocabulary.mergeSharedWords(filtered as any, 'shared');
+        addToast(
+          (truncated ? `File had more than 20,000 rows — imported the first 20,000. ` : '') +
+          `Imported: ${added} new, ${updated} updated (re-uploading the same file is safe). Click "Push to All Learners" to send this to every device.`,
+          'success'
+        );
+      } catch (err) {
+        addToast(`Import failed: ${(err as Error).message || 'unexpected error'}`, 'error');
+      }
+    };
+
+    const isJson = file.name.toLowerCase().endsWith('.json') || file.type === 'application/json';
+
+    if (isJson) {
+      file.text().then(text => {
+        try {
+          const parsed = JSON.parse(text);
+          // Accept either a raw array of word objects, or a {words: [...]}
+          // wrapper (matches what Export CSV / the GitHub sync files use in
+          // spirit, and what most people naturally reach for when hand-
+          // writing or exporting a JSON word list).
+          const rows: unknown = Array.isArray(parsed) ? parsed : (parsed && typeof parsed === 'object' ? (parsed as any).words : null);
+          if (!Array.isArray(rows)) {
+            addToast('JSON must be an array of word objects, or {"words": [...]}', 'error');
+            return;
+          }
+          importRows(rows as Record<string, unknown>[]);
+        } catch (err) {
+          addToast(`Couldn't parse that JSON file: ${(err as Error).message || 'invalid JSON'}`, 'error');
+        }
+      }).catch(err => {
+        addToast(`Couldn't read that file: ${(err as Error).message || 'unknown error'}`, 'error');
+      });
+      return;
+    }
+
     try {
       Papa.parse(file, {
         header: true,
@@ -225,29 +276,7 @@ export function AdminPanel() {
         // locate its own script via document.currentScript, which breaks
         // once bundled by Vite for production and throws instead of
         // parsing. That was previously crashing CSV import entirely.
-        complete: (r) => {
-          try {
-            let rows = (r.data as Record<string, string>[])
-              .filter(x => x && typeof x === 'object' && x.word && x.word.trim());
-            if (rows.length === 0) {
-              addToast('No valid rows found — check that your CSV has a "word" column', 'error');
-              return;
-            }
-            let truncated = false;
-            if (rows.length > 20_000) {
-              rows = rows.slice(0, 20_000);
-              truncated = true;
-            }
-            const { added, updated } = vocabulary.mergeSharedWords(rows as any, 'shared');
-            addToast(
-              (truncated ? `File had more than 20,000 rows — imported the first 20,000. ` : '') +
-              `Imported: ${added} new, ${updated} updated (re-uploading the same file is safe). Click "Push to All Learners" to send this to every device.`,
-              'success'
-            );
-          } catch (err) {
-            addToast(`Import failed: ${(err as Error).message || 'unexpected error'}`, 'error');
-          }
-        },
+        complete: (r) => importRows(r.data as Record<string, unknown>[]),
         error: () => addToast('Failed to parse CSV — check the file is valid CSV format', 'error'),
       });
     } catch (err) {
@@ -808,13 +837,15 @@ function doGet() {
                 <FileDown className="h-4 w-4"/> Export CSV
               </button>
               <label className="flex items-center justify-center gap-2 py-3 rounded-xl bg-[#4A90E2] text-white text-sm font-semibold hover:bg-blue-600 cursor-pointer transition-colors">
-                <FileUp className="h-4 w-4"/> Import CSV
-                <input type="file" accept=".csv" onChange={handleImportVocab} className="hidden"/>
+                <FileUp className="h-4 w-4"/> Import CSV / JSON
+                <input type="file" accept=".csv,.json,application/json" onChange={handleImportVocab} className="hidden"/>
               </label>
             </div>
-            <div className="text-xs text-muted-foreground bg-muted rounded-lg p-3">
-              <p className="font-medium mb-1">Required CSV columns:</p>
+            <div className="text-xs text-muted-foreground bg-muted rounded-lg p-3 space-y-1">
+              <p className="font-medium">Required CSV columns:</p>
               <p className="font-mono text-[10px]">word, definition, partOfSpeech, cefrLevel, exampleSentence, synonym, antonym, category, difficulty, laoTranslation, thaiTranslation</p>
+              <p className="font-medium pt-1">JSON format:</p>
+              <p className="font-mono text-[10px]">a plain array of word objects (or {`{"words": [...]}`}), each with the same fields as above</p>
             </div>
 
             {/* Push imported/synced curriculum to every learner's device */}

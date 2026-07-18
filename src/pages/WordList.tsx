@@ -43,6 +43,7 @@ export function WordList() {
   const isAdmin = currentUser?.role === 'admin';
   const [searchQuery, setSearchQuery] = useState('');
   const [activeFilter, setActiveFilter] = useState<FilterLevel>('all');
+  const [activeCategory, setActiveCategory] = useState('');
   const [sortOption, setSortOption] = useState<SortOption>('recent');
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [isImportExportOpen, setIsImportExportOpen] = useState(false);
@@ -52,16 +53,18 @@ export function WordList() {
   const [showSortDropdown, setShowSortDropdown] = useState(false);
   const [page, setPage] = useState(1);
 
+  const categories = useMemo(() => vocabulary.getCategories(), [vocabulary]);
+
   const filteredWords = useMemo(() => {
-    return vocabulary.getFilteredWords(activeFilter, sortOption, searchQuery);
-  }, [vocabulary, activeFilter, sortOption, searchQuery]);
+    return vocabulary.getFilteredWords(activeFilter, sortOption, searchQuery, activeCategory || undefined);
+  }, [vocabulary, activeFilter, sortOption, searchQuery, activeCategory]);
 
   // A library can hold up to 20,000 words — rendering all of them at once
   // would mean tens of thousands of DOM nodes and a page that scrolls and
   // types like molasses. Paginate instead; page size stays fast no matter
   // how large the underlying library grows.
   const totalPages = Math.max(1, Math.ceil(filteredWords.length / PAGE_SIZE));
-  useEffect(() => { setPage(1); }, [activeFilter, sortOption, searchQuery]);
+  useEffect(() => { setPage(1); }, [activeFilter, activeCategory, sortOption, searchQuery]);
   useEffect(() => { if (page > totalPages) setPage(totalPages); }, [totalPages, page]);
   const pagedWords = useMemo(
     () => filteredWords.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE),
@@ -161,6 +164,22 @@ export function WordList() {
             </button>
           ))}
         </div>
+        {categories.length > 0 && (
+          <select
+            value={activeCategory}
+            onChange={(e) => setActiveCategory(e.target.value)}
+            className={`rounded-lg border px-3 py-1.5 text-sm font-medium transition-colors ${
+              activeCategory
+                ? 'border-[#F5A623] bg-[#FFF3DD] text-[#B37600]'
+                : 'border-border bg-card text-muted-foreground'
+            }`}
+          >
+            <option value="">All Categories</option>
+            {categories.map((c) => (
+              <option key={c} value={c}>{c}</option>
+            ))}
+          </select>
+        )}
         <div className="ml-auto relative">
           <button
             onClick={() => setShowSortDropdown(!showSortDropdown)}
