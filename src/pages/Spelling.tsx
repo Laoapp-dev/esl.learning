@@ -108,7 +108,9 @@ export function Spelling() {
       setStreak(newStreak);
       if (newStreak > bestStreak) {
         setBestStreak(newStreak);
-        localStorage.setItem('lexicon_best_streak', newStreak.toString());
+        try {
+          localStorage.setItem('lexicon_best_streak', newStreak.toString());
+        } catch { /* storage full — streak still tracked in memory for this session */ }
       }
 
       vocabulary.updateWord(currentWord.id, {

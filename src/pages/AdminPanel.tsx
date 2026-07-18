@@ -350,13 +350,17 @@ function doGet() {
   const toggleShowKey = (k: string) => setShowAiKeys(prev => ({ ...prev, [k]: !prev[k] }));
 
   const saveAiKeys = () => {
-    localStorage.setItem(ADMIN_API_KEYS_KEY, JSON.stringify({
-      google:      aiGoogleKey.trim(),
-      elevenlabs:  aiElevenKey.trim(),
-      elevenVoice: aiElevenVoice.trim() || 'JBFqnCBsd6RMkjVDRZzb',
-    }));
-    setAiKeySaved(true);
-    setTimeout(() => setAiKeySaved(false), 2500);
+    try {
+      localStorage.setItem(ADMIN_API_KEYS_KEY, JSON.stringify({
+        google:      aiGoogleKey.trim(),
+        elevenlabs:  aiElevenKey.trim(),
+        elevenVoice: aiElevenVoice.trim() || 'JBFqnCBsd6RMkjVDRZzb',
+      }));
+      setAiKeySaved(true);
+      setTimeout(() => setAiKeySaved(false), 2500);
+    } catch (error) {
+      addToast(`Couldn't save API keys — browser storage may be full: ${(error as Error).message}`, 'error');
+    }
   };
 
   const TABS: { id: Tab; label: string; icon: React.ElementType }[] = [

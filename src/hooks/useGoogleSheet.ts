@@ -162,7 +162,11 @@ export function useGoogleSheet() {
   const saveConfig = useCallback((updates: Partial<GSConfig>) => {
     setConfig(prev => {
       const next = { ...prev, ...updates };
-      localStorage.setItem(GS_CONFIG_KEY, JSON.stringify(next));
+      try {
+        localStorage.setItem(GS_CONFIG_KEY, JSON.stringify(next));
+      } catch (error) {
+        console.error('Failed to save Google Sheet config to localStorage:', error);
+      }
       return next;
     });
   }, []);

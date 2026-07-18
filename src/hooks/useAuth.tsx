@@ -22,7 +22,17 @@ function loadUsers(): AuthUser[] {
 }
 
 function saveUsers(users: AuthUser[]) {
-  localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(users));
+  try {
+    localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(users));
+  } catch (error) {
+    // If the origin's storage quota is already full (e.g. a large
+    // vocabulary import used most of it), this used to throw uncaught
+    // straight out of login/registration and crash the whole app via the
+    // top-level ErrorBoundary. Auth data is small and re-derivable from
+    // the session already in memory, so failing this write quietly is far
+    // better than taking down the app over it.
+    console.error('Failed to save users to localStorage:', error);
+  }
 }
 
 function loadCreds(): Record<string, string> {
@@ -33,7 +43,27 @@ function loadCreds(): Record<string, string> {
 }
 
 function saveCreds(creds: Record<string, string>) {
-  localStorage.setItem(AUTH_CREDS_KEY, JSON.stringify(creds));
+  try {
+    localStorage.setItem(AUTH_CREDS_KEY, JSON.stringify(creds));
+  } catch (error) {
+    console.error('Failed to save credentials to localStorage:', error);
+  }
+}
+
+// Small helper for the many session-persistence writes below — same
+// rationale as saveUsers/saveCreds above: never let a full storage quota
+// (most likely from a large vocabulary import) throw out of an auth flow.
+function safeSetItem(key: string, value: string) {
+  try {
+    localStorage.setItem(key, value);
+  } catch (error) {
+    console.error(`Failed to save "${key}" to localStorage:`, error);
+  }
+}
+
+function persistSession(id: string, expireAt: number) {
+  safeSetItem(SESSION_PERSIST_KEY, id);
+  safeSetItem(SESSION_EXPIRE_KEY, String(expireAt));
 }
 
 const SESSION_PERSIST_KEY = AUTH_SESSION_KEY + '_persist';
@@ -162,8 +192,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       saveUsers(users.map(u => (u.id === existing.id ? updated : u)));
       setCurrentUser(updated);
       const expireAt = Date.now() + SESSION_DAYS * 24 * 60 * 60 * 1000;
-      localStorage.setItem(SESSION_PERSIST_KEY, existing.id);
-      localStorage.setItem(SESSION_EXPIRE_KEY, String(expireAt));
+      persistSession(existing.id, expireAt);
       return { success: true };
     }
 
@@ -234,8 +263,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setCurrentUser(updated);
     if (remember) {
       const expireAt = Date.now() + SESSION_DAYS * 24 * 60 * 60 * 1000;
-      localStorage.setItem(SESSION_PERSIST_KEY, user.id);
-      localStorage.setItem(SESSION_EXPIRE_KEY, String(expireAt));
+      persistSession(user.id, expireAt);
     } else {
       sessionStorage.setItem(AUTH_SESSION_KEY, user.id);
     }
@@ -275,8 +303,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setCurrentUser(newUser);
     // Auto-login for 7 days after registration
     const expireAt = Date.now() + SESSION_DAYS * 24 * 60 * 60 * 1000;
-    localStorage.setItem(SESSION_PERSIST_KEY, id);
-    localStorage.setItem(SESSION_EXPIRE_KEY, String(expireAt));
+    persistSession(id, expireAt);
     return { success: true };
   }, []);
 
@@ -383,8 +410,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setCurrentUser(newUser);
 
     const expireAt = Date.now() + SESSION_DAYS * 24 * 60 * 60 * 1000;
-    localStorage.setItem(SESSION_PERSIST_KEY, id);
-    localStorage.setItem(SESSION_EXPIRE_KEY, String(expireAt));
+    persistSession(id, expireAt);
     return { success: true };
   }, []);
 
@@ -453,7 +479,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const saveGithubConfig = useCallback((config: GithubConfig) => {
-    localStorage.setItem(GITHUB_SYNC_KEY, JSON.stringify(config));
+    safeSetItem(GITHUB_SYNC_KEY, JSON.stringify(config));
   }, []);
 
   const syncToGithub = useCallback(async (data: object, userId: string): Promise<{ success: boolean; message: string }> => {

@@ -676,7 +676,9 @@ export function RolePlay() {
         setLessonDone(true);
         setCompletedLessons(prev => {
           const updated = new Set([...prev, selectedLesson!.id]);
-          localStorage.setItem('moe_rp_done', JSON.stringify([...updated]));
+          try {
+            localStorage.setItem('moe_rp_done', JSON.stringify([...updated]));
+          } catch { /* storage full — completion still tracked in memory for this session */ }
           return updated;
         });
       } else {
